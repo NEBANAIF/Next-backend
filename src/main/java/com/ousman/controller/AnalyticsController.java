@@ -43,7 +43,7 @@ public class AnalyticsController {
             }
             AnalyticsDashboardResponse body = analyticsService.dashboard(from, to, g, includeSeries, branchId, locationType);
             return ResponseEntity.ok(body);
-        } catch (IllegalArgumentException | RuntimeException e) {
+        } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }

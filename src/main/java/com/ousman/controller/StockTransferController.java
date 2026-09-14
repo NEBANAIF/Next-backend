@@ -73,7 +73,7 @@ public class StockTransferController {
 
     // ── Request ──────────────────────────────────────────────────────────
 
-    public static class RequestBody {
+    public static class TransferRequestBody {
         public Long productId;
         public Long fromBranchId;
         public Long toBranchId;
@@ -85,7 +85,7 @@ public class StockTransferController {
 
     @PostMapping
     @PreAuthorize(OPERATIONAL_ROLES)
-    public ResponseEntity<?> request(@RequestBody RequestBody req) {
+    public ResponseEntity<?> request(@RequestBody TransferRequestBody req) {
         try {
             StockTransfer transfer = transferService.request(
                 req.productId, req.fromBranchId, req.toBranchId, req.quantity,
