@@ -13,26 +13,25 @@ import java.util.List;
 @Repository
 public interface CustomerRepository extends JpaRepository<Customer, Long> {
 
-    List<Customer> findByBranchIdOrderByNameAsc(Long branchId);
+    @Query("SELECT c FROM Customer c WHERE c.branch.id = :branchId AND c.active = true ORDER BY c.name ASC")
+    List<Customer> findAllActiveForBranch(@Param("branchId") Long branchId);
 
-    @Query("SELECT c FROM Customer c WHERE c.branch.id IN :branchIds ORDER BY c.name ASC")
-    List<Customer> findByBranchIdInOrderByNameAsc(@Param("branchIds") List<Long> branchIds);
+    boolean existsByBranchId(Long branchId);
 
     @Query("SELECT c FROM Customer c WHERE " +
+           "(:branchId IS NULL OR c.branch.id = :branchId) AND " +
            "(:search IS NULL OR :search = '' " +
            "  OR LOWER(c.name) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "  OR LOWER(c.phone) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "  OR LOWER(c.email) LIKE LOWER(CONCAT('%', :search, '%'))) " +
            "ORDER BY c.name ASC")
-    Page<Customer> search(@Param("search") String search, Pageable pageable);
+    List<Customer> search(@Param("branchId") Long branchId, @Param("search") String search);
 
-    /** Same as search() above, restricted to a specific set of branches — used for scoped-role users. */
     @Query("SELECT c FROM Customer c WHERE " +
-           "c.branch.id IN :branchIds AND " +
+           "(:branchId IS NULL OR c.branch.id = :branchId) AND " +
            "(:search IS NULL OR :search = '' " +
            "  OR LOWER(c.name) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "  OR LOWER(c.phone) LIKE LOWER(CONCAT('%', :search, '%')) " +
-           "  OR LOWER(c.email) LIKE LOWER(CONCAT('%', :search, '%'))) " +
-           "ORDER BY c.name ASC")
-    Page<Customer> searchByBranches(@Param("branchIds") List<Long> branchIds, @Param("search") String search, Pageable pageable);
+           "  OR LOWER(c.email) LIKE LOWER(CONCAT('%', :search, '%')))")
+    Page<Customer> searchPage(@Param("branchId") Long branchId, @Param("search") String search, Pageable pageable);
 }

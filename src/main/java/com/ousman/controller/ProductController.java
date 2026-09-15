@@ -65,13 +65,19 @@ public class ProductController {
         }
     }
 
-    // POST /api/products/{id}/adjust-stock?quantity=10&reason=Restock&user=Admin
+    // POST /api/products/{id}/adjust-stock?quantity=-5&reason=Damaged&user=Admin
+    // Manual corrections/write-offs ONLY — stock is added only through
+    // Batches (see BatchController /api/batches), never here, so every
+    // unit of stock added is traceable to a batch and a cost.
     @PostMapping("/{id}/adjust-stock")
     public ResponseEntity<?> adjustStock(
             @PathVariable Long id,
             @RequestParam int quantity,
             @RequestParam(defaultValue = "Stock adjustment") String reason,
             @RequestParam(defaultValue = "Admin") String user) {
+        if (quantity > 0) {
+            return ResponseEntity.badRequest().body("Stock can only be added through Batches. Use the Batches page to receive stock.");
+        }
         try {
             return ResponseEntity.ok(productService.adjustStock(id, quantity, reason, user));
         } catch (RuntimeException e) {
@@ -79,13 +85,18 @@ public class ProductController {
         }
     }
 
-    // Backward compatible: POST /api/products/{id}/add-stock
+    // Backward compatible: POST /api/products/{id}/add-stock — kept for
+    // older clients, but now also correction-only for the same reason as
+    // adjust-stock above (stock is added only through Batches).
     @PostMapping("/{id}/add-stock")
     public ResponseEntity<?> addStock(
             @PathVariable Long id,
             @RequestParam int quantity,
             @RequestParam(defaultValue = "Stock addition") String reason,
             @RequestParam(defaultValue = "Admin") String user) {
+        if (quantity > 0) {
+            return ResponseEntity.badRequest().body("Stock can only be added through Batches. Use the Batches page to receive stock.");
+        }
         try {
             return ResponseEntity.ok(productService.adjustStock(id, quantity, reason, user));
         } catch (RuntimeException e) {

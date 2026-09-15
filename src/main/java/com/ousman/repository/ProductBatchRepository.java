@@ -41,24 +41,12 @@ public interface ProductBatchRepository extends JpaRepository<ProductBatch, Long
            "(:search IS NULL OR :search = '' " +
            "  OR LOWER(b.product.name) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "  OR LOWER(b.batchNumber) LIKE LOWER(CONCAT('%', :search, '%')) " +
-           "  OR LOWER(b.supplier) LIKE LOWER(CONCAT('%', :search, '%'))) " +
+           "  OR LOWER(b.supplier.name) LIKE LOWER(CONCAT('%', :search, '%'))) " +
            "ORDER BY b.receivedDate DESC, b.id DESC")
     Page<ProductBatch> searchPage(@Param("productId") Long productId, @Param("branchId") Long branchId,
                                    @Param("search") String search, Pageable pageable);
 
-    // ── Branch-scoped dashboard aggregates ─────────────────────────────────
-    // The product catalog is shared/global (Product.stock is the company-wide
-    // total), but when the dashboard is filtered to one branch or one
-    // location type, "stock on hand" has to mean stock in THOSE branches —
-    // computed from open batches, not the global Product.stock field.
-
-    /** Per-product remaining stock, summed across just these branches. */
-    @Query("SELECT b.product.id, COALESCE(SUM(b.quantityRemaining), 0) FROM ProductBatch b " +
-           "WHERE b.branch.id IN :branchIds GROUP BY b.product.id")
-    List<Object[]> sumRemainingGroupedByProduct(@Param("branchIds") List<Long> branchIds);
-
-    /** Total value of stock sitting in these branches, at each unit's own batch cost. */
-    @Query("SELECT COALESCE(SUM(b.quantityRemaining * b.costPerUnit), 0) FROM ProductBatch b " +
-           "WHERE b.branch.id IN :branchIds")
-    Double sumInventoryValueByBranches(@Param("branchIds") List<Long> branchIds);
+    /** Total inventory value (cost x remaining qty) across every open batch in one branch. */
+    @Query("SELECT COALESCE(SUM(b.costPerUnit * b.quantityRemaining), 0) FROM ProductBatch b WHERE b.branch.id = :branchId")
+    Double sumInventoryValueByBranch(@Param("branchId") Long branchId);
 }

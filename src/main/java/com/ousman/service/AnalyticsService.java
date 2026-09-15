@@ -4,10 +4,8 @@ import com.ousman.dto.analytics.AnalyticsDashboardResponse;
 import com.ousman.dto.analytics.TimeSeriesPoint;
 import com.ousman.dto.analytics.TopProductEntry;
 import com.ousman.model.Sale;
-import com.ousman.model.Branch;
 import com.ousman.repository.ExpenseRepository;
 import com.ousman.repository.ProductRepository;
-import com.ousman.repository.ProductBatchRepository;
 import com.ousman.repository.SaleRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.Cacheable;
@@ -21,7 +19,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Analytics Service — builds KPI totals and time-series for the dashboard,
@@ -49,63 +46,49 @@ public class AnalyticsService {
     @Autowired private SaleRepository    saleRepo;
     @Autowired private ExpenseRepository expenseRepo;
     @Autowired private ProductRepository productRepo;
-    @Autowired private ProductBatchRepository batchRepo;
-    @Autowired private BranchService     branchService;
-    @Autowired private AccessControlService accessControl;
+    @Autowired private com.ousman.repository.ProductBatchRepository batchRepo;
 
     // ── Public entry points ───────────────────────────────────────────────────
 
     /**
-     * Convenience overload — includes time-series by default, no branch filter.
+     * Convenience overload — includes time-series by default.
      */
     @Transactional(readOnly = true)
     public AnalyticsDashboardResponse dashboard(LocalDate from, LocalDate to, String granularity) {
-        return dashboard(from, to, granularity, true, null, null);
+        return dashboard(from, to, granularity, true, null);
     }
 
     /**
-     * Builds the full analytics payload for the given date window, optionally
-     * narrowed to one branch or one location type (STORE/WAREHOUSE).
+     * Builds the full analytics payload for the given date window.
+     * Result is cached per unique combination of from + to + granularity + includeSeries.
+     * Evicted by SaleService/ExpenseService on any write.
      *
-     * Access control: a scoped-role user (WAREHOUSE_MANAGER/STORE_MANAGER/
-     * STAFF) always gets their own accessible branches regardless of what
-     * branchId/locationType is requested — those params only matter for
-     * ADMIN, who can freely choose All / a location type / one specific
-     * branch. This mirrors the same visibleBranchIdsOrNullForAll() pattern
-     * used everywhere else branch scoping is enforced.
-     *
-     * @param branchId     optional — narrows to exactly one branch (ADMIN only)
-     * @param locationType optional — "STORE" or "WAREHOUSE" (ADMIN only,
-     *                     ignored if branchId is also set)
+     * @param from          start date (inclusive)
+     * @param to            end date (inclusive)
+     * @param granularity   "day" | "month" | "hour"
+     * @param includeSeries whether to compute the time-series array
      */
+    @Cacheable(
+        value = "analytics",
+        key   = "#from + '_' + #to + '_' + #granularity + '_' + #includeSeries + '_' + (#branchId != null ? #branchId : 'ALL')"
+    )
     @Transactional(readOnly = true)
     public AnalyticsDashboardResponse dashboard(
-            LocalDate from, LocalDate to, String granularity, boolean includeSeries,
-            Long branchId, String locationType) {
+            LocalDate from, LocalDate to, String granularity, boolean includeSeries, Long branchId) {
 
         String g = (granularity == null) ? "day" : granularity.toLowerCase(Locale.ROOT);
         if (to.isBefore(from)) {
             throw new IllegalArgumentException("'to' must be on or after 'from'.");
         }
 
-        // null branchIds == "all branches, no filter" (fastest path — uses
-        // the original 2-arg company-wide queries). A non-null list, even a
-        // single-element one, means "restrict to exactly these branches".
-        List<Long> branchIds = resolveBranchIds(branchId, locationType);
-        boolean filtered = branchIds != null;
-        if (filtered && branchIds.isEmpty()) {
-            return emptyDashboard(from, to, g);
-        }
-
         // ── Aggregate totals — one DB query each ──────────────────────────────
-        double revenue      = filtered ? nz(saleRepo.sumTotalBetween(from, to, branchIds))    : nz(saleRepo.sumTotalBetween(from, to));
-        long   qty          = filtered ? nzLong(saleRepo.sumQuantityBetween(from, to, branchIds)) : nzLong(saleRepo.sumQuantityBetween(from, to));
-        long   saleCount    = filtered ? nzLong(saleRepo.countSalesBetween(from, to, branchIds))  : nzLong(saleRepo.countSalesBetween(from, to));
-        double cogs         = filtered ? nz(saleRepo.sumCogsBetween(from, to, branchIds))      : nz(saleRepo.sumCogsBetween(from, to));
-        // Expenses aren't attributed to a branch anywhere in this system yet,
-        // so they stay company-wide even when a branch filter is active —
-        // netProfit/netMargin below are therefore only fully accurate for
-        // the unfiltered ("All") view. Flagged rather than silently wrong.
+        double revenue      = nz(saleRepo.sumTotalBetween(from, to, branchId));
+        long   qty          = nzLong(saleRepo.sumQuantityBetween(from, to, branchId));
+        long   saleCount    = nzLong(saleRepo.countSalesBetween(from, to, branchId));
+        double cogs         = nz(saleRepo.sumCogsBetween(from, to, branchId));
+        // Expenses are company-wide (not branch-scoped) — a branch filter never
+        // changes this figure, so net profit for a single branch is really
+        // "gross profit minus a share of overhead it doesn't itself track".
         double expenses     = nz(expenseRepo.sumBetween(from, to));
 
         // ── Derived metrics ───────────────────────────────────────────────────
@@ -114,6 +97,12 @@ public class AnalyticsService {
         double grossMargin  = revenue > 0 ? (grossProfit / revenue) * 100.0 : 0.0;
         double netMargin    = revenue > 0 ? (netProfit   / revenue) * 100.0 : 0.0;
         double avgOrder     = saleCount > 0 ? revenue / saleCount : 0.0;
+        // Company-wide inventory value comes off Product (aggregate stock x cost).
+        // A branch filter switches to the batch-level figure for just that
+        // branch instead, since that's where branch-scoped cost actually lives.
+        double inventoryVal = branchId != null
+            ? nz(batchRepo.sumInventoryValueByBranch(branchId))
+            : nz(productRepo.sumInventoryValue());
 
         // ── Build response DTO ────────────────────────────────────────────────
         AnalyticsDashboardResponse res = new AnalyticsDashboardResponse();
@@ -130,82 +119,21 @@ public class AnalyticsService {
         res.setGrossMarginPct(round2(grossMargin));
         res.setNetMarginPct(round2(netMargin));
         res.setAvgOrderValue(round2(avgOrder));
+        res.setInventoryValue(round2(inventoryVal));
 
-        // ── Inventory metrics ────────────────────────────────────────────────
-        // Product.stock/minStock are the company-wide totals — correct for
-        // the unfiltered view. Once a branch/location filter is active,
-        // "stock on hand" has to mean stock in THOSE branches, computed from
-        // open batches instead.
-        if (!filtered) {
-            res.setInventoryValue(round2(nz(productRepo.sumInventoryValue())));
-            res.setProductsInStock(productRepo.countByStatus("IN_STOCK"));
-            res.setProductsLowStock(productRepo.countByStatus("LOW_STOCK"));
-            res.setProductsOutOfStock(productRepo.countByStatus("OUT_OF_STOCK"));
-            res.setProductsHighStock(productRepo.countHighStockProducts());
-        } else {
-            applyBranchInventoryMetrics(res, branchIds);
-        }
+        // Stock-status counts (in/low/out/high) are company-wide regardless of
+        // branch filter — Product.stock is a single aggregate across every
+        // branch's batches, and "low stock" as a per-branch concept would need
+        // a per-branch threshold model this system doesn't have yet.
+        res.setProductsInStock(productRepo.countByStatus("IN_STOCK"));
+        res.setProductsLowStock(productRepo.countByStatus("LOW_STOCK"));
+        res.setProductsOutOfStock(productRepo.countByStatus("OUT_OF_STOCK"));
+        res.setProductsHighStock(productRepo.countHighStockProducts());
 
         // Time-series is optional — skip for period-comparison table calls
-        res.setSeries(includeSeries ? buildSeries(from, to, g, branchIds) : List.of());
-        res.setTopProducts(buildTopProducts(from, to, branchIds));
+        res.setSeries(includeSeries ? buildSeries(from, to, g, branchId) : List.of());
+        res.setTopProducts(buildTopProducts(from, to, branchId));
 
-        return res;
-    }
-
-    /** Resolves the request's branch filter into a concrete id list, enforcing branch access. */
-    private List<Long> resolveBranchIds(Long branchId, String locationType) {
-        Set<Long> visible = accessControl.visibleBranchIdsOrNullForAll();
-        if (visible != null) {
-            // Scoped role — their own accessible branches always win, any
-            // admin-style filter param passed in is ignored.
-            return List.copyOf(visible);
-        }
-        // Unscoped (ADMIN) — apply whichever filter was requested, if any.
-        if (branchId != null) {
-            branchService.getById(branchId); // throws if it doesn't exist
-            return List.of(branchId);
-        }
-        if (locationType != null && !locationType.isBlank()) {
-            return branchService.getActiveByLocationType(locationType.toUpperCase(Locale.ROOT))
-                    .stream().map(Branch::getId).toList();
-        }
-        return null; // "All" — no filter
-    }
-
-    private void applyBranchInventoryMetrics(AnalyticsDashboardResponse res, List<Long> branchIds) {
-        double inventoryValue = nz(batchRepo.sumInventoryValueByBranches(branchIds));
-        res.setInventoryValue(round2(inventoryValue));
-
-        Map<Long, Integer> remainingByProduct = new HashMap<>();
-        for (Object[] row : batchRepo.sumRemainingGroupedByProduct(branchIds)) {
-            Long productId = ((Number) row[0]).longValue();
-            int remaining  = ((Number) row[1]).intValue();
-            remainingByProduct.put(productId, remaining);
-        }
-
-        long inStock = 0, lowStock = 0, outOfStock = 0, highStock = 0;
-        for (var product : productRepo.findAll()) {
-            int stock = remainingByProduct.getOrDefault(product.getId(), 0);
-            int min   = (product.getMinStock() != null) ? product.getMinStock() : 30;
-            if (stock <= 0)            outOfStock++;
-            else if (stock <= min)     lowStock++;
-            else if (stock > min * 3)  { inStock++; highStock++; }
-            else                       inStock++;
-        }
-        res.setProductsInStock(inStock);
-        res.setProductsLowStock(lowStock);
-        res.setProductsOutOfStock(outOfStock);
-        res.setProductsHighStock(highStock);
-    }
-
-    private AnalyticsDashboardResponse emptyDashboard(LocalDate from, LocalDate to, String granularity) {
-        AnalyticsDashboardResponse res = new AnalyticsDashboardResponse();
-        res.setFrom(from.toString());
-        res.setTo(to.toString());
-        res.setGranularity(granularity);
-        res.setSeries(List.of());
-        res.setTopProducts(List.of());
         return res;
     }
 
@@ -215,10 +143,8 @@ public class AnalyticsService {
      * Returns all products with sales in the window, sorted by revenue DESC.
      * Frontend slices top-N and bottom-N from this list.
      */
-    private List<TopProductEntry> buildTopProducts(LocalDate from, LocalDate to, List<Long> branchIds) {
-        List<Object[]> rows = (branchIds != null)
-                ? saleRepo.findProductRevenueBetween(from, to, branchIds)
-                : saleRepo.findProductRevenueBetween(from, to);
+    private List<TopProductEntry> buildTopProducts(LocalDate from, LocalDate to, Long branchId) {
+        List<Object[]> rows = saleRepo.findProductRevenueBetween(from, to, branchId);
         List<TopProductEntry> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             String name    = (row[0] != null) ? row[0].toString() : "Unknown";
@@ -233,26 +159,23 @@ public class AnalyticsService {
 
     // ── Time-series dispatcher ────────────────────────────────────────────────
 
-    private List<TimeSeriesPoint> buildSeries(LocalDate from, LocalDate to, String granularity, List<Long> branchIds) {
-        if ("hour".equals(granularity) && from.equals(to)) return hourlySeries(from, branchIds);
-        if ("month".equals(granularity))                   return monthlySeries(from, to, branchIds);
-        return dailySeries(from, to, branchIds);
+    private List<TimeSeriesPoint> buildSeries(LocalDate from, LocalDate to, String granularity, Long branchId) {
+        if ("hour".equals(granularity) && from.equals(to)) return hourlySeries(from, branchId);
+        if ("month".equals(granularity))                   return monthlySeries(from, to, branchId);
+        return dailySeries(from, to, branchId);
     }
 
     // ── Daily series ──────────────────────────────────────────────────────────
 
-    private List<TimeSeriesPoint> dailySeries(LocalDate from, LocalDate to, List<Long> branchIds) {
+    private List<TimeSeriesPoint> dailySeries(LocalDate from, LocalDate to, Long branchId) {
         // row[0]=LocalDate, row[1]=revenue Double, row[2]=quantity Long
-        List<Object[]> rows = (branchIds != null)
-                ? saleRepo.sumBySaleDate(from, to, branchIds)
-                : saleRepo.sumBySaleDate(from, to);
+        List<Object[]> rows = saleRepo.sumBySaleDate(from, to, branchId);
         Map<LocalDate, double[]> byDay = new HashMap<>();
         for (Object[] row : rows) {
             byDay.put((LocalDate) row[0], new double[]{ toDouble(row[1]), toLong(row[2]) });
         }
 
-        Map<LocalDate, Double> cogsByDay = mapDateToDouble(
-                branchIds != null ? saleRepo.sumCogsBySaleDate(from, to, branchIds) : saleRepo.sumCogsBySaleDate(from, to));
+        Map<LocalDate, Double> cogsByDay = mapDateToDouble(saleRepo.sumCogsBySaleDate(from, to, branchId));
         Map<LocalDate, Double> expByDay  = mapDateToDouble(expenseRepo.sumByExpenseDate(from, to));
 
         List<TimeSeriesPoint> out = new ArrayList<>();
@@ -275,11 +198,9 @@ public class AnalyticsService {
 
     // ── Monthly series ────────────────────────────────────────────────────────
 
-    private List<TimeSeriesPoint> monthlySeries(LocalDate from, LocalDate to, List<Long> branchIds) {
+    private List<TimeSeriesPoint> monthlySeries(LocalDate from, LocalDate to, Long branchId) {
         // row[0]=year Number, row[1]=month Number, row[2]=revenue, row[3]=quantity
-        List<Object[]> rows = (branchIds != null)
-                ? saleRepo.sumByYearMonth(from, to, branchIds)
-                : saleRepo.sumByYearMonth(from, to);
+        List<Object[]> rows = saleRepo.sumByYearMonth(from, to, branchId);
         Map<String, double[]> byYm = new HashMap<>();
         for (Object[] row : rows) {
             int y = ((Number) row[0]).intValue();
@@ -287,8 +208,7 @@ public class AnalyticsService {
             byYm.put(ymKey(y, m), new double[]{ toDouble(row[2]), toLong(row[3]) });
         }
 
-        Map<String, Double> cogsYm = mapYearMonthToDouble(
-                branchIds != null ? saleRepo.sumCogsByYearMonth(from, to, branchIds) : saleRepo.sumCogsByYearMonth(from, to));
+        Map<String, Double> cogsYm = mapYearMonthToDouble(saleRepo.sumCogsByYearMonth(from, to, branchId));
         Map<String, Double> expYm  = mapYearMonthToDouble(expenseRepo.sumExpenseByYearMonth(from, to));
 
         List<TimeSeriesPoint> out = new ArrayList<>();
@@ -317,13 +237,12 @@ public class AnalyticsService {
 
     // ── Hourly series ─────────────────────────────────────────────────────────
 
-    private List<TimeSeriesPoint> hourlySeries(LocalDate day, List<Long> branchIds) {
+    private List<TimeSeriesPoint> hourlySeries(LocalDate day, Long branchId) {
         List<Sale> sales = saleRepo.findBySaleDateBetween(day, day);
-        if (branchIds != null) {
-            Set<Long> ids = Set.copyOf(branchIds);
+        if (branchId != null) {
             sales = sales.stream()
-                    .filter(s -> s.getBranch() != null && ids.contains(s.getBranch().getId()))
-                    .toList();
+                .filter(s -> s.getBranch() != null && branchId.equals(s.getBranch().getId()))
+                .collect(java.util.stream.Collectors.toList());
         }
         double[]   revByHour = new double[24];
         long[]     qtyByHour = new long[24];

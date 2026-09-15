@@ -42,12 +42,15 @@ public class SaleService {
     @Autowired
     private AccessControlService accessControl;
 
+    @Autowired
+    private CustomerService customerService;
+
     // ── Read: cached ──────────────────────────────────────────────────────
 
-    @Cacheable(value = "products", key = "'allSales'")
+    @Cacheable(value = "products", key = "'allSales:' + (#branchId != null ? #branchId : 'ALL')")
     @Transactional(readOnly = true)
-    public List<Sale> getAll() {
-        return filterVisible(saleRepository.findAllOrderedByDate());
+    public List<Sale> getAll(Long branchId) {
+        return saleRepository.findAllOrderedByDate(branchId);
     }
 
     // Not cached, deliberately: the whole point of this method is that it
@@ -57,36 +60,29 @@ public class SaleService {
     // constantly-changing cache that costs more to maintain than the
     // query itself costs to run.
     @Transactional(readOnly = true)
-    public Page<Sale> search(String search, LocalDate date, Pageable pageable) {
-        var visible = accessControl.visibleBranchIdsOrNullForAll();
-        if (visible == null) return saleRepository.search(search, date, pageable);
-        if (visible.isEmpty()) return Page.empty(pageable);
-        return saleRepository.searchByBranches(search, date, List.copyOf(visible), pageable);
+    public Page<Sale> search(String search, LocalDate date, Long branchId, Pageable pageable) {
+        return saleRepository.search(search, date, branchId, pageable);
     }
 
     // Queries only the requested date's rows (indexed column) instead of
     // loading every historical sale — used by /api/sales/today so that
     // endpoint stays fast as the sales table grows.
-    @Cacheable(value = "products", key = "'salesByDate:' + #date")
+    @Cacheable(value = "products", key = "'salesByDate:' + #date + ':' + (#branchId != null ? #branchId : 'ALL')")
     @Transactional(readOnly = true)
-    public List<Sale> getByDate(LocalDate date) {
-        return filterVisible(saleRepository.findBySaleDate(date));
-    }
-
-    /** ADMIN/legacy WORKER see everything; scoped roles see only their own branch(es). */
-    private List<Sale> filterVisible(List<Sale> all) {
-        var visible = accessControl.visibleBranchIdsOrNullForAll();
-        if (visible == null) return all;
-        return all.stream()
-                .filter(s -> s.getBranch() != null && visible.contains(s.getBranch().getId()))
-                .toList();
+    public List<Sale> getByDate(LocalDate date, Long branchId) {
+        return branchId != null ? saleRepository.findBySaleDateAndBranchId(date, branchId)
+                                 : saleRepository.findBySaleDate(date);
     }
 
     @Cacheable(value = "products", key = "'sale:' + #id")
     @Transactional(readOnly = true)
     public Sale getById(Long id) {
-        return saleRepository.findById(id)
+        Sale sale = saleRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Sale not found with id: " + id));
+        if (sale.getBranch() != null) {
+            accessControl.requireBranchAccess(sale.getBranch().getId());
+        }
+        return sale;
     }
 
     // ── Write: cache-evicting ─────────────────────────────────────────────
@@ -107,6 +103,19 @@ public class SaleService {
             sale.setBranch(branch);
         } else {
             sale.setBranch(null);
+        }
+
+        // Optional link to a saved Customer (branch-scoped CRM). If given,
+        // it also backfills customerName so every existing screen that
+        // reads that field keeps working unchanged.
+        if (sale.getCustomer() != null && sale.getCustomer().getId() != null) {
+            com.ousman.model.Customer customer = customerService.getById(sale.getCustomer().getId());
+            sale.setCustomer(customer);
+            if (sale.getCustomerName() == null || sale.getCustomerName().isBlank()) {
+                sale.setCustomerName(customer.getName());
+            }
+        } else {
+            sale.setCustomer(null);
         }
 
         // ── Required: customer name ───────────────────────────────────────
@@ -150,37 +159,13 @@ public class SaleService {
             throw new RuntimeException("Invalid payment status: " + status);
         }
 
-        // Persist the sale row before consuming batches — batch allocation
-        // rows reference this sale's id.
+        // Persist the sale row
         Sale saved = saleRepository.save(sale);
 
-        // Deduct stock (business-wide total) — recorded to history further
-        // down, once we know which batch(es) this sale actually drew from.
+        // Deduct stock and record the change in stock history
         int prevStock = product.getStock();
         int newStock  = prevStock - sale.getQuantity();
         product.setStock(newStock);
-        productService.update(product.getId(), product);
-
-        // ── Batch consumption (only when a branch was specified) ───────
-        // Draws down the actual batch(es) this sale came from — FIFO by
-        // default, or one manually chosen batch — and prices the sale at
-        // its real cost of goods instead of the product's flat cost. Sales
-        // for products with no branch/batch history yet are left exactly
-        // as before (costOfGoods stays null, Analytics falls back to
-        // product.cost × quantity for those).
-        BatchService.ConsumptionResult consumption = null;
-        if (sale.getBranch() != null) {
-            consumption = batchService.consumeForSale(
-                saved, sale.getBranch().getId(), sale.getQuantity(), sale.getBatchId());
-            saved.setCostOfGoods(consumption.totalCost);
-            saved = saleRepository.save(saved);
-        }
-
-        // A sale can span more than one batch (FIFO crossing a batch
-        // boundary) — the history row references the first one consumed
-        // for traceability; the full breakdown lives in SaleBatchAllocation.
-        var firstBatch = (consumption != null && !consumption.allocations.isEmpty())
-                ? consumption.allocations.get(0).getBatch() : null;
 
         productService.recordHistory(
             product,
@@ -190,9 +175,24 @@ public class SaleService {
             "Sale to " + sale.getCustomerName(),
             sale.getRecordedBy() != null ? sale.getRecordedBy() : "Admin",
             "SALE-" + saved.getId(),
-            sale.getBranch(),
-            firstBatch
+            sale.getBranch()
         );
+
+        productService.update(product.getId(), product);
+
+        // ── Batch consumption (only when a branch was specified) ───────
+        // Draws down the actual batch(es) this sale came from — FIFO by
+        // default, or one manually chosen batch — and prices the sale at
+        // its real cost of goods instead of the product's flat cost. Sales
+        // for products with no branch/batch history yet are left exactly
+        // as before (costOfGoods stays null, Analytics falls back to
+        // product.cost × quantity for those).
+        if (sale.getBranch() != null) {
+            BatchService.ConsumptionResult consumption = batchService.consumeForSale(
+                saved, sale.getBranch().getId(), sale.getQuantity(), sale.getBatchId());
+            saved.setCostOfGoods(consumption.totalCost);
+            saved = saleRepository.save(saved);
+        }
 
         // ── Auto-create the linked Payment record for whatever was collected
         //    right now (paidAmount — full total for PAID_FULL, the partial
@@ -295,8 +295,7 @@ public class SaleService {
             "Stock restored — sale #" + id + " deleted",
             "System",
             "SALE-DEL-" + id,
-            sale.getBranch(),
-            null
+            sale.getBranch()
         );
 
         productService.update(product.getId(), product);

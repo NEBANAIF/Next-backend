@@ -49,6 +49,12 @@ public class Sale {
     @Column(name = "customer_name")
     private String customerName;
 
+    // Optional link to a saved Customer record (branch-scoped CRM). Walk-in
+    // sales can skip this and just use customerName as free text.
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "customer_id")
+    private Customer customer;
+
     @Column(name = "recorded_by")
     private String recordedBy;
 
@@ -138,6 +144,9 @@ public class Sale {
 
     public String getCustomerName() { return customerName; }
     public void setCustomerName(String customerName) { this.customerName = customerName; }
+
+    public Customer getCustomer() { return customer; }
+    public void setCustomer(Customer customer) { this.customer = customer; }
 
     public String getRecordedBy() { return recordedBy; }
     public void setRecordedBy(String recordedBy) { this.recordedBy = recordedBy; }

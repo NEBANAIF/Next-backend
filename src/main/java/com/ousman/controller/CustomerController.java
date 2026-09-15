@@ -14,6 +14,11 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Customers are branch-scoped — every operational role can manage
+ * customers for branches they have access to (enforced in CustomerService
+ * via AccessControlService); ADMIN can act on any branch.
+ */
 @RestController
 @RequestMapping("/api/customers")
 public class CustomerController {
@@ -21,17 +26,25 @@ public class CustomerController {
     @Autowired
     private CustomerService customerService;
 
-    // Every operational role (ADMIN, legacy WORKER, and the three
-    // location-scoped roles) can manage customers — always narrowed to
-    // their own branch(es) except for ADMIN.
+    @Autowired
+    private com.ousman.service.AccessControlService accessControl;
+
     private static final String OPERATIONAL_ROLES =
         "hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')";
 
     @GetMapping
     @PreAuthorize(OPERATIONAL_ROLES)
-    public ResponseEntity<?> getAll(@RequestParam(required = false) Long branchId) {
+    public ResponseEntity<List<Customer>> search(
+            @RequestParam(required = false) Long branchId,
+            @RequestParam(required = false) String search) {
+        return ResponseEntity.ok(customerService.search(accessControl.resolveBranchFilter(branchId), search));
+    }
+
+    @GetMapping("/active")
+    @PreAuthorize(OPERATIONAL_ROLES)
+    public ResponseEntity<?> getActiveForBranch(@RequestParam Long branchId) {
         try {
-            return ResponseEntity.ok(customerService.getAll(branchId));
+            return ResponseEntity.ok(customerService.getActiveForBranch(branchId));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -42,9 +55,10 @@ public class CustomerController {
     public ResponseEntity<Page<Customer>> getPage(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) Long branchId,
             @RequestParam(required = false) String search) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "name"));
-        return ResponseEntity.ok(customerService.search(search, pageable));
+        return ResponseEntity.ok(customerService.getPage(accessControl.resolveBranchFilter(branchId), search, pageable));
     }
 
     @GetMapping("/{id}")
@@ -53,7 +67,7 @@ public class CustomerController {
         try {
             return ResponseEntity.ok(customerService.getById(id));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            return ResponseEntity.notFound().build();
         }
     }
 

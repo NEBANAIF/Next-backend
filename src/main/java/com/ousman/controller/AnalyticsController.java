@@ -20,11 +20,9 @@ public class AnalyticsController {
     /**
      * Database-backed KPIs and time-series for dashboards.
      *
-     * @param from         inclusive (yyyy-MM-dd)
-     * @param to           inclusive (yyyy-MM-dd)
-     * @param granularity  day | month | hour (hour only when from = to)
-     * @param branchId     optional — narrow to one branch (ADMIN only; ignored for scoped roles)
-     * @param locationType optional — "STORE" or "WAREHOUSE" (ADMIN only; ignored if branchId is set)
+     * @param from        inclusive (yyyy-MM-dd)
+     * @param to          inclusive (yyyy-MM-dd)
+     * @param granularity day | month | hour (hour only when from = to)
      */
     @GetMapping("/dashboard")
     public ResponseEntity<?> dashboard(
@@ -32,8 +30,7 @@ public class AnalyticsController {
         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
         @RequestParam(defaultValue = "day") String granularity,
         @RequestParam(defaultValue = "true") boolean includeSeries,
-        @RequestParam(required = false) Long branchId,
-        @RequestParam(required = false) String locationType
+        @RequestParam(required = false) Long branchId
     ) {
         try {
             String g = granularity == null ? "day" : granularity;
@@ -41,9 +38,9 @@ public class AnalyticsController {
                 return ResponseEntity.badRequest()
                     .body(Map.of("error", "hour granularity requires from and to to be the same day"));
             }
-            AnalyticsDashboardResponse body = analyticsService.dashboard(from, to, g, includeSeries, branchId, locationType);
+            AnalyticsDashboardResponse body = analyticsService.dashboard(from, to, g, includeSeries, branchId);
             return ResponseEntity.ok(body);
-        } catch (RuntimeException e) {
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }

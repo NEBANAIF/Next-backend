@@ -1,9 +1,9 @@
 package com.ousman.service;
 
+import com.ousman.model.Category;
 import com.ousman.model.Product;
 import com.ousman.model.StockHistory;
-import com.ousman.model.Branch;
-import com.ousman.model.ProductBatch;
+import com.ousman.repository.CategoryRepository;
 import com.ousman.repository.ProductRepository;
 import com.ousman.repository.StockHistoryRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +39,15 @@ public class ProductService {
 
     @Autowired
     private StockHistoryRepository stockHistoryRepository;
+
+    @Autowired
+    private CategoryRepository categoryRepository;
+
+    private Category resolveCategory(Category requested) {
+        if (requested == null || requested.getId() == null) return null;
+        return categoryRepository.findById(requested.getId())
+                .orElseThrow(() -> new RuntimeException("Category not found: " + requested.getId()));
+    }
 
     // ── Read: cached ─────────────────────────────────────
 
@@ -96,23 +105,19 @@ public class ProductService {
     // ── Write: cache-evicting ─────────────────────────────
 
     /**
-     * Creates a new product.
-     * Evicts the entire "products" cache so all lists are refreshed.
+     * Creates a new product. Stock always starts at 0 — stock is only ever
+     * added through Batches (ProductBatch / BatchService), never at product
+     * creation, so every unit of stock is traceable to a batch with its own
+     * cost. Evicts the entire "products" cache so all lists are refreshed.
      */
     @CacheEvict(value = "products", allEntries = true)
     public Product create(Product product) {
         if (product.getCost()     == null) product.setCost(0.0);
-        if (product.getStock()    == null) product.setStock(0);
         if (product.getMinStock() == null) product.setMinStock(30);
+        product.setStock(0);
+        product.setCategory(resolveCategory(product.getCategory()));
 
-        Product saved = productRepository.save(product);
-
-        // Record initial stock in history if stock > 0
-        if (saved.getStock() > 0) {
-            recordHistory(saved, saved.getStock(), 0, saved.getStock(),
-                    "STOCK_ADDITION", "Initial stock", "System", "INIT-" + saved.getId());
-        }
-        return saved;
+        return productRepository.save(product);
     }
 
     /**
@@ -128,15 +133,24 @@ public class ProductService {
         existing.setPrice(updated.getPrice());
         existing.setCost(updated.getCost() != null ? updated.getCost() : 0.0);
         existing.setMinStock(updated.getMinStock() != null ? updated.getMinStock() : 30);
-        existing.setCategory(updated.getCategory());
+        existing.setCategory(resolveCategory(updated.getCategory()));
         existing.setDescription(updated.getDescription());
         // Stock is managed separately via adjustStock — never changed here
         return productRepository.save(existing);
     }
 
     /**
-     * Adjusts (adds or subtracts) stock for a product.
-     * Evicts the entire "products" cache.
+     * Adjusts (adds or subtracts) stock for a product. This is the shared
+     * low-level primitive used internally by BatchService (receiving),
+     * SaleService (selling), StockTransferService (transfers), and
+     * ReturnService (restocking/discarding) — all of which are allowed to
+     * add stock because they carry a batch and a cost with them.
+     *
+     * The public-facing correction endpoint on ProductController only
+     * permits negative adjustments here, since "stock is added only through
+     * Batches" — a bare manual addition would have no cost basis. This
+     * method itself stays generic so those trusted internal callers keep
+     * working.
      *
      * @param id             product ID
      * @param quantityChange positive = add stock, negative = remove stock
@@ -145,17 +159,12 @@ public class ProductService {
      */
     @CacheEvict(value = "products", allEntries = true)
     public Product adjustStock(Long id, int quantityChange, String reason, String user) {
-        return adjustStock(id, quantityChange, reason, user, null, null);
+        return adjustStock(id, quantityChange, reason, user, null);
     }
 
-    /**
-     * Same as above, but also tags the resulting StockHistory row with the
-     * branch this movement happened at and (when known) the specific batch
-     * it came from — used by BatchService, which always has both at hand.
-     */
+    /** Same as above, but tags the resulting StockHistory row with the branch this happened at. */
     @CacheEvict(value = "products", allEntries = true)
-    public Product adjustStock(Long id, int quantityChange, String reason, String user,
-                                Branch branch, ProductBatch batch) {
+    public Product adjustStock(Long id, int quantityChange, String reason, String user, com.ousman.model.Branch branch) {
         Product product = productRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
 
@@ -172,7 +181,7 @@ public class ProductService {
         Product saved = productRepository.save(product);
 
         String type = quantityChange > 0 ? "STOCK_ADDITION" : "ADJUSTMENT";
-        recordHistory(saved, quantityChange, prevStock, newStock, type, reason, user, null, branch, batch);
+        recordHistory(saved, quantityChange, prevStock, newStock, type, reason, user, null, branch);
         return saved;
     }
 
@@ -198,22 +207,17 @@ public class ProductService {
                                int prevStock, int newStock,
                                String type, String reason,
                                String user, String reference) {
-        recordHistory(product, quantityChange, prevStock, newStock, type, reason, user, reference, null, null);
+        recordHistory(product, quantityChange, prevStock, newStock, type, reason, user, reference, null);
     }
 
-    /**
-     * Full version — also tags the row with the branch this movement
-     * happened at and, when known, the specific batch it came from.
-     * Both are nullable: legacy flat-stock rows and a few manual-adjustment
-     * paths genuinely have neither.
-     */
+    /** Same as above, but tags the row with which branch this movement happened at (nullable). */
     public void recordHistory(Product product, int quantityChange,
                                int prevStock, int newStock,
                                String type, String reason,
-                               String user, String reference,
-                               Branch branch, ProductBatch batch) {
+                               String user, String reference, com.ousman.model.Branch branch) {
         StockHistory history = new StockHistory();
         history.setProduct(product);
+        history.setBranch(branch);
         history.setQuantityChange(quantityChange);
         history.setPreviousStock(prevStock);
         history.setNewStock(newStock);
@@ -221,8 +225,6 @@ public class ProductService {
         history.setReason(reason);
         history.setUser(user);
         history.setReference(reference);
-        history.setBranch(branch);
-        history.setBatch(batch);
         // Explicitly set date and time so they are never null,
         // even if @PrePersist is bypassed (e.g. old records, bulk inserts)
         history.setDate(java.time.LocalDate.now());

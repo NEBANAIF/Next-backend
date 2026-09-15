@@ -9,17 +9,15 @@ import java.time.LocalDateTime;
  * specific unit cost. The same product can have many open batches — at the
  * same or different branches — each with a different cost, because that's
  * what actually happened when it was bought (price changes over time,
- * different suppliers, etc.).
+ * different suppliers, etc.). A batch carries no selling price and no
+ * expiry date — it exists purely to track incoming cost and quantity per
+ * branch; selling price lives on Product, and expiry tracking isn't part
+ * of this system.
  *
  * `quantityRemaining` is decremented as sales/discards/transfers consume
  * this batch (see SaleBatchAllocation) and is what stock-on-hand is
  * actually computed from, per branch. `quantityReceived` never changes
  * after creation — it's the original lot size, kept for audit/reporting.
- *
- * By design a batch stores only: batch number, quantity, cost price,
- * branch, and received date. There is no selling price here (that lives
- * on Product / Sale) and no expiry date — this system does not track
- * perishability.
  */
 @Entity
 @Table(name = "product_batches", indexes = {
@@ -41,7 +39,7 @@ public class ProductBatch {
     @JoinColumn(name = "branch_id", nullable = false)
     private Branch branch;
 
-    // Supplier/lot reference — optional, purely informational (not used for lookups)
+    // Lot reference — optional, purely informational (not used for lookups)
     @Column(name = "batch_number", length = 100)
     private String batchNumber;
 
@@ -54,8 +52,22 @@ public class ProductBatch {
     @Column(name = "quantity_remaining", nullable = false)
     private Integer quantityRemaining;
 
-    @Column(length = 150)
-    private String supplier;
+    // Which supplier this batch came from — optional (a manual/ad-hoc batch
+    // may not have one), set automatically when the batch was created by
+    // receiving against a PurchaseOrderLine.
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "supplier_id")
+    private Supplier supplier;
+
+    // The purchase order (and specific line) this batch was received
+    // against, if any. Null for a manual/ad-hoc batch entry.
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "purchase_order_id")
+    private PurchaseOrder purchaseOrder;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "purchase_order_line_id")
+    private PurchaseOrderLine purchaseOrderLine;
 
     @Column(name = "received_date", nullable = false)
     private LocalDate receivedDate;
@@ -104,8 +116,14 @@ public class ProductBatch {
     public Integer getQuantityRemaining() { return quantityRemaining; }
     public void setQuantityRemaining(Integer quantityRemaining) { this.quantityRemaining = quantityRemaining; }
 
-    public String getSupplier() { return supplier; }
-    public void setSupplier(String supplier) { this.supplier = supplier; }
+    public Supplier getSupplier() { return supplier; }
+    public void setSupplier(Supplier supplier) { this.supplier = supplier; }
+
+    public PurchaseOrder getPurchaseOrder() { return purchaseOrder; }
+    public void setPurchaseOrder(PurchaseOrder purchaseOrder) { this.purchaseOrder = purchaseOrder; }
+
+    public PurchaseOrderLine getPurchaseOrderLine() { return purchaseOrderLine; }
+    public void setPurchaseOrderLine(PurchaseOrderLine purchaseOrderLine) { this.purchaseOrderLine = purchaseOrderLine; }
 
     public LocalDate getReceivedDate() { return receivedDate; }
     public void setReceivedDate(LocalDate receivedDate) { this.receivedDate = receivedDate; }

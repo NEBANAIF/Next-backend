@@ -4,15 +4,9 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * A customer, always attached to exactly one branch — customers, like
- * everything else operational in this system, don't cross branch
- * boundaries. A scoped-role user only ever sees their own branch's
- * customers; ADMIN sees all of them, filterable by branch.
- *
- * This is a standalone directory for now (contact info + notes) — it is
- * NOT yet linked to Sale by a foreign key. Sale.customerName stays a free
- * text field; a future pass could add an optional Sale.customer FK that,
- * when set, denormalizes into customerName the way it already works today.
+ * A customer, scoped to the branch that added them — independent per
+ * branch, same as products/stock/sales/history (a branch's customer list
+ * is its own; it doesn't see or share another branch's customers).
  */
 @Entity
 @Table(name = "customers", indexes = {
@@ -41,7 +35,7 @@ public class Customer {
     @Column(length = 250)
     private String address;
 
-    @Column(length = 1000)
+    @Column(length = 500)
     private String notes;
 
     @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT TRUE")

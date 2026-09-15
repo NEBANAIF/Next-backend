@@ -24,6 +24,9 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
     /** All sales on a specific date */
     List<Sale> findBySaleDate(LocalDate date);
 
+    /** All sales on a specific date, for one branch — used by getToday() for branch users. */
+    List<Sale> findBySaleDateAndBranchId(LocalDate date, Long branchId);
+
     /** All sales in a date range — used by hourly series loader */
     List<Sale> findBySaleDateBetween(LocalDate from, LocalDate to);
 
@@ -56,18 +59,13 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
            "(:search IS NULL OR :search = '' " +
            "  OR LOWER(s.customerName) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "  OR LOWER(s.product.name) LIKE LOWER(CONCAT('%', :search, '%'))) " +
-           "AND (:date IS NULL OR s.saleDate = :date)")
-    Page<Sale> search(@Param("search") String search, @Param("date") LocalDate date, Pageable pageable);
+           "AND (:date IS NULL OR s.saleDate = :date) " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId)")
+    Page<Sale> search(@Param("search") String search, @Param("date") LocalDate date,
+                       @Param("branchId") Long branchId, Pageable pageable);
 
-    /** Same as search() above, restricted to a specific set of branches — used for scoped-role users. */
-    @Query("SELECT s FROM Sale s WHERE " +
-           "s.branch.id IN :branchIds AND " +
-           "(:search IS NULL OR :search = '' " +
-           "  OR LOWER(s.customerName) LIKE LOWER(CONCAT('%', :search, '%')) " +
-           "  OR LOWER(s.product.name) LIKE LOWER(CONCAT('%', :search, '%'))) " +
-           "AND (:date IS NULL OR s.saleDate = :date)")
-    Page<Sale> searchByBranches(@Param("search") String search, @Param("date") LocalDate date,
-                                 @Param("branchIds") List<Long> branchIds, Pageable pageable);
+    @Query("SELECT s FROM Sale s WHERE (:branchId IS NULL OR s.branch.id = :branchId) ORDER BY s.saleDate DESC, s.saleTime DESC")
+    List<Sale> findAllOrderedByDate(@Param("branchId") Long branchId);
 
     // ── Simple aggregates ─────────────────────────────────────────────────────
 
@@ -89,42 +87,33 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
      * Total revenue (SUM of s.total) between from and to inclusive.
      * Returns 0 when no sales exist — never returns null thanks to COALESCE.
      */
-    @Query("SELECT COALESCE(SUM(s.total), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to")
-    Double sumTotalBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    /** Same as above, restricted to sales made at one of the given branches. */
-    @Query("SELECT COALESCE(SUM(s.total), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds")
-    Double sumTotalBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    @Query("SELECT COALESCE(SUM(s.total), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId)")
+    Double sumTotalBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     /**
      * Total units sold (SUM of s.quantity) between from and to inclusive.
      * Returns 0 when no sales exist.
      */
-    @Query("SELECT COALESCE(SUM(s.quantity), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to")
-    Long sumQuantityBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT COALESCE(SUM(s.quantity), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds")
-    Long sumQuantityBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    @Query("SELECT COALESCE(SUM(s.quantity), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId)")
+    Long sumQuantityBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     /**
      * Number of sale transactions between from and to inclusive.
      */
-    @Query("SELECT COUNT(s) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to")
-    Long countSalesBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT COUNT(s) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds")
-    Long countSalesBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    @Query("SELECT COUNT(s) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId)")
+    Long countSalesBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     /**
      * Cost of Goods Sold = SUM(product.cost × quantity) for all sales in range.
      * Uses the cost stored on the linked Product entity.
      * Returns 0 when no sales exist.
      */
-    @Query("SELECT COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to")
-    Double sumCogsBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds")
-    Double sumCogsBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    @Query("SELECT COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId)")
+    Double sumCogsBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     // ── Analytics: daily series ───────────────────────────────────────────────
 
@@ -134,13 +123,9 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
      */
     @Query("SELECT s.saleDate, COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
            "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId) " +
            "GROUP BY s.saleDate ORDER BY s.saleDate")
-    List<Object[]> sumBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT s.saleDate, COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
-           "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds " +
-           "GROUP BY s.saleDate ORDER BY s.saleDate")
-    List<Object[]> sumBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    List<Object[]> sumBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     /**
      * COGS grouped by sale date — used to compute daily gross profit.
@@ -148,13 +133,9 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
      */
     @Query("SELECT s.saleDate, COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) " +
            "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId) " +
            "GROUP BY s.saleDate ORDER BY s.saleDate")
-    List<Object[]> sumCogsBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT s.saleDate, COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) " +
-           "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds " +
-           "GROUP BY s.saleDate ORDER BY s.saleDate")
-    List<Object[]> sumCogsBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    List<Object[]> sumCogsBySaleDate(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     // ── Analytics: monthly series — EXTRACT is PostgreSQL / Neon safe ─────────
 
@@ -166,16 +147,10 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
     @Query("SELECT EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate), " +
            "COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
            "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId) " +
            "GROUP BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate) " +
            "ORDER BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate)")
-    List<Object[]> sumByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate), " +
-           "COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
-           "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds " +
-           "GROUP BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate) " +
-           "ORDER BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate)")
-    List<Object[]> sumByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    List<Object[]> sumByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     /**
      * COGS grouped by year and month — used to compute monthly gross profit.
@@ -184,16 +159,10 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
     @Query("SELECT EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate), " +
            "COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) " +
            "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId) " +
            "GROUP BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate) " +
            "ORDER BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate)")
-    List<Object[]> sumCogsByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate), " +
-           "COALESCE(SUM(COALESCE(s.costOfGoods, s.product.cost * s.quantity)), 0) " +
-           "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds " +
-           "GROUP BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate) " +
-           "ORDER BY EXTRACT(YEAR FROM s.saleDate), EXTRACT(MONTH FROM s.saleDate)")
-    List<Object[]> sumCogsByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    List<Object[]> sumCogsByYearMonth(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 
     // ── Analytics: product revenue ranking ───────────────────────────────────
 
@@ -204,11 +173,7 @@ public interface SaleRepository extends JpaRepository<Sale, Long> {
      */
     @Query("SELECT s.product.name, COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
            "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to " +
+           "AND (:branchId IS NULL OR s.branch.id = :branchId) " +
            "GROUP BY s.product.name ORDER BY SUM(s.total) DESC")
-    List<Object[]> findProductRevenueBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
-
-    @Query("SELECT s.product.name, COALESCE(SUM(s.total), 0), COALESCE(SUM(s.quantity), 0) " +
-           "FROM Sale s WHERE s.saleDate BETWEEN :from AND :to AND s.branch.id IN :branchIds " +
-           "GROUP BY s.product.name ORDER BY SUM(s.total) DESC")
-    List<Object[]> findProductRevenueBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchIds") List<Long> branchIds);
+    List<Object[]> findProductRevenueBetween(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("branchId") Long branchId);
 }

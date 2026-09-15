@@ -35,14 +35,20 @@ public class SaleController {
     @Autowired
     private SaleService saleService;
 
-    // ── GET /api/sales — ADMIN + WORKER (view full sales history) ─────────
+    @Autowired
+    private com.ousman.service.AccessControlService accessControl;
+
+    private static final String OPERATIONAL_ROLES =
+        "hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')";
+
+    // ── GET /api/sales — every operational role (branch users see only their own branch) ─
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
-    public ResponseEntity<List<Sale>> getAll() {
-        return ResponseEntity.ok(saleService.getAll());
+    @PreAuthorize(OPERATIONAL_ROLES)
+    public ResponseEntity<List<Sale>> getAll(@RequestParam(required = false) Long branchId) {
+        return ResponseEntity.ok(saleService.getAll(accessControl.resolveBranchFilter(branchId)));
     }
 
-    // ── GET /api/sales/page — ADMIN + WORKER (paginated, searchable listing) ──
+    // ── GET /api/sales/page — paginated, searchable, branch-filtered listing ──
     // This is the endpoint the Sales page table uses. Unlike getAll() above,
     // it only loads one page of rows from the database (LIMIT/OFFSET under
     // the hood), so it stays fast and the response stays small no matter
@@ -55,40 +61,44 @@ public class SaleController {
     //   search — matches customer name or product name, case-insensitive
     //   date   — filter to one sale date, e.g. ?date=2026-07-22
     @GetMapping("/page")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
+    @PreAuthorize(OPERATIONAL_ROLES)
     public ResponseEntity<Page<Sale>> getPage(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String search,
+            @RequestParam(required = false) Long branchId,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) java.time.LocalDate date) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "saleDate", "saleTime"));
-        return ResponseEntity.ok(saleService.search(search, date, pageable));
+        return ResponseEntity.ok(saleService.search(search, date, accessControl.resolveBranchFilter(branchId), pageable));
     }
 
-    // ── GET /api/sales/today — WORKER + ADMIN (only today's sales) ────────
-    // Workers call this endpoint; admins can also use it for a quick today view
+    // ── GET /api/sales/today — branch-filtered for branch users ───────────
     @GetMapping("/today")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
-    public ResponseEntity<List<Sale>> getToday() {
+    @PreAuthorize(OPERATIONAL_ROLES)
+    public ResponseEntity<List<Sale>> getToday(@RequestParam(required = false) Long branchId) {
         // Query only today's rows at the database level (indexed on sale_date)
         // instead of loading the entire sales table into memory and filtering
         // in Java — this used to load and deserialize every historical sale
         // just to throw most of it away, which gets slower every day as the
         // table grows.
-        return ResponseEntity.ok(saleService.getByDate(LocalDate.now()));
+        return ResponseEntity.ok(saleService.getByDate(LocalDate.now(), accessControl.resolveBranchFilter(branchId)));
     }
 
-    // ── GET /api/sales/{id} — ADMIN only ──────────────────────────────────
+    // ── GET /api/sales/{id} — any operational role, but only for their own branch ──
+    // (SaleService.getById enforces the branch check; ADMIN bypasses it)
     @GetMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
-    public ResponseEntity<Sale> getById(@PathVariable Long id) {
-        return ResponseEntity.ok(saleService.getById(id));
+    @PreAuthorize(OPERATIONAL_ROLES)
+    public ResponseEntity<?> getById(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(saleService.getById(id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
-    // ── POST /api/sales — ADMIN + WORKER (record a new sale) ──────────────
-    // Both roles can record sales
+    // ── POST /api/sales — every operational role (record a new sale) ──────
     @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
+    @PreAuthorize(OPERATIONAL_ROLES)
     public ResponseEntity<?> recordSale(
             @RequestBody Sale sale,
             @AuthenticationPrincipal String email) {
@@ -110,7 +120,7 @@ public class SaleController {
     // Omitting them keeps the old behavior (payment-fields-only update, no
     // linked Payment row), so existing callers keep working unchanged.
     @PutMapping("/{id}/payment")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
+    @PreAuthorize(OPERATIONAL_ROLES)
     public ResponseEntity<?> updatePayment(
             @PathVariable Long id,
             @RequestBody Map<String, Object> body,

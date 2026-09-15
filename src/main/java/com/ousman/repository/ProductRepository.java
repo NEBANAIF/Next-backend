@@ -27,15 +27,15 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     List<Product> findByStatus(String status);
 
     /** All products in a specific category */
-    List<Product> findByCategory(String category);
+    List<Product> findByCategoryId(Long categoryId);
 
     /**
-     * Full-text search across name and category (case-insensitive).
+     * Full-text search across name and category name (case-insensitive).
      * Uses JPQL LOWER + CONCAT — works on both PostgreSQL and H2.
      */
     @Query("SELECT p FROM Product p WHERE " +
-           "LOWER(p.name)     LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-           "LOWER(p.category) LIKE LOWER(CONCAT('%', :keyword, '%'))")
+           "LOWER(p.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(p.category.name) LIKE LOWER(CONCAT('%', :keyword, '%'))")
     List<Product> search(@Param("keyword") String keyword);
 
     /** Products with stock ≤ minStock but greater than zero (low stock warning) */

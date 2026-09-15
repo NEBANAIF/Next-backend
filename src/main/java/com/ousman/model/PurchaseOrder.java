@@ -1,27 +1,26 @@
 package com.ousman.model;
 
 import jakarta.persistence.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
- * A purchase order — always targets exactly one destination Branch (where
- * the stock will land), against one Supplier, with one or more line items.
- * Receiving a line item (fully or partially) creates a ProductBatch for
- * that quantity via BatchService — this is the "PO → Receive → Batch"
- * workflow. Status:
+ * A purchase order — branch-scoped (it's this branch's order, drawing on
+ * the company-wide Supplier list) with one or more lines. Receiving
+ * against a line is what actually creates a ProductBatch (see
+ * PurchaseOrderService.receiveLine) — a PO on its own never touches stock.
  *
- *   DRAFT              — created, not yet sent/confirmed with the supplier
- *   ORDERED            — confirmed, awaiting delivery
- *   PARTIALLY_RECEIVED — some (not all) line items have been received in full
- *   RECEIVED           — every line item's ordered quantity has been received
- *   CANCELLED          — closed with nothing received (only allowed pre-receipt)
+ *   DRAFT              — being built, not yet sent to the supplier
+ *   ORDERED             — sent; nothing received yet
+ *   PARTIALLY_RECEIVED  — some lines fully/partly received, not all
+ *   RECEIVED            — every line fully received
+ *   CANCELLED           — closed without completing
  */
 @Entity
 @Table(name = "purchase_orders", indexes = {
     @Index(name = "idx_po_branch_id", columnList = "branch_id"),
-    @Index(name = "idx_po_supplier_id", columnList = "supplier_id")
+    @Index(name = "idx_po_supplier_id", columnList = "supplier_id"),
+    @Index(name = "idx_po_status", columnList = "status")
 })
 public class PurchaseOrder {
 
@@ -29,37 +28,33 @@ public class PurchaseOrder {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "po_number", length = 50)
-    private String poNumber;
-
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "supplier_id", nullable = false)
-    private Supplier supplier;
+    // Human-facing order code, e.g. "PO-000123". Auto-assigned from the id
+    // right after insert.
+    @Column(name = "order_number", length = 100)
+    private String orderNumber;
 
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "branch_id", nullable = false)
     private Branch branch;
 
-    @Column(nullable = false, length = 30)
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "supplier_id", nullable = false)
+    private Supplier supplier;
+
+    @Column(nullable = false, length = 20, columnDefinition = "VARCHAR(20) DEFAULT 'DRAFT'")
     private String status = "DRAFT";
 
-    @Column(length = 1000)
+    @Column(name = "order_date")
+    private LocalDate orderDate;
+
+    @Column(name = "expected_date")
+    private LocalDate expectedDate;
+
+    @Column(length = 500)
     private String notes;
 
-    @Column(name = "ordered_by", length = 150)
-    private String orderedBy;
-
-    @Column(name = "ordered_at")
-    private LocalDateTime orderedAt;
-
-    @Column(name = "cancelled_by", length = 150)
-    private String cancelledBy;
-
-    @Column(name = "cancelled_at")
-    private LocalDateTime cancelledAt;
-
-    @OneToMany(mappedBy = "purchaseOrder", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
-    private List<PurchaseOrderItem> items = new ArrayList<>();
+    @Column(name = "created_by", length = 100)
+    private String createdBy;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -71,8 +66,8 @@ public class PurchaseOrder {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
-        if (status == null) status = "DRAFT";
-        if (orderedAt == null) orderedAt = LocalDateTime.now();
+        if (status == null || status.isBlank()) status = "DRAFT";
+        if (orderDate == null) orderDate = LocalDate.now();
     }
 
     @PreUpdate
@@ -84,35 +79,29 @@ public class PurchaseOrder {
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
-    public String getPoNumber() { return poNumber; }
-    public void setPoNumber(String poNumber) { this.poNumber = poNumber; }
-
-    public Supplier getSupplier() { return supplier; }
-    public void setSupplier(Supplier supplier) { this.supplier = supplier; }
+    public String getOrderNumber() { return orderNumber; }
+    public void setOrderNumber(String orderNumber) { this.orderNumber = orderNumber; }
 
     public Branch getBranch() { return branch; }
     public void setBranch(Branch branch) { this.branch = branch; }
 
+    public Supplier getSupplier() { return supplier; }
+    public void setSupplier(Supplier supplier) { this.supplier = supplier; }
+
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+
+    public LocalDate getOrderDate() { return orderDate; }
+    public void setOrderDate(LocalDate orderDate) { this.orderDate = orderDate; }
+
+    public LocalDate getExpectedDate() { return expectedDate; }
+    public void setExpectedDate(LocalDate expectedDate) { this.expectedDate = expectedDate; }
 
     public String getNotes() { return notes; }
     public void setNotes(String notes) { this.notes = notes; }
 
-    public String getOrderedBy() { return orderedBy; }
-    public void setOrderedBy(String orderedBy) { this.orderedBy = orderedBy; }
-
-    public LocalDateTime getOrderedAt() { return orderedAt; }
-    public void setOrderedAt(LocalDateTime orderedAt) { this.orderedAt = orderedAt; }
-
-    public String getCancelledBy() { return cancelledBy; }
-    public void setCancelledBy(String cancelledBy) { this.cancelledBy = cancelledBy; }
-
-    public LocalDateTime getCancelledAt() { return cancelledAt; }
-    public void setCancelledAt(LocalDateTime cancelledAt) { this.cancelledAt = cancelledAt; }
-
-    public List<PurchaseOrderItem> getItems() { return items; }
-    public void setItems(List<PurchaseOrderItem> items) { this.items = items; }
+    public String getCreatedBy() { return createdBy; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

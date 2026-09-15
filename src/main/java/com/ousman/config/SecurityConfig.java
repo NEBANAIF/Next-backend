@@ -79,40 +79,20 @@ public class SecurityConfig {
                 // Workers cannot view, create, update or delete users
                 .requestMatchers("/api/users/**").hasRole("ADMIN")
 
-                // ── Analytics & Finance (Expenses) ─────────────────────────
-                // Analytics/dashboard is available to ADMIN and the three
-                // location-scoped roles (their view is auto-filtered to their
-                // own branch(es) by AnalyticsService); Finance/Expenses stays
-                // ADMIN-only since expenses aren't attributed to a branch.
-                // The legacy WORKER role keeps its original restriction on both.
-                .requestMatchers("/api/analytics/**")
-                    .hasAnyRole("ADMIN", "WAREHOUSE_MANAGER", "STORE_MANAGER", "STAFF")
+                // ── ADMIN-ONLY: Analytics & Finance (Expenses) ─────────────
+                // Workers do not have access to analytics dashboard or expenses
+                .requestMatchers("/api/analytics/**").hasRole("ADMIN")
                 .requestMatchers("/api/expenses/**").hasRole("ADMIN")
 
-                // ── Stock history: ADMIN and the three location-scoped roles ──
-                // (WAREHOUSE_MANAGER/STORE_MANAGER/STAFF) can view — each is
-                // further filtered to their own branch(es) by the service
-                // layer (AccessControlService). The legacy WORKER role keeps
-                // its original restriction: no stock-history access at all.
-                .requestMatchers(HttpMethod.DELETE, "/api/stock-history/**").hasRole("ADMIN")
-                .requestMatchers("/api/stock-history/**")
-                    .hasAnyRole("ADMIN", "WAREHOUSE_MANAGER", "STORE_MANAGER", "STAFF")
+                // ── ADMIN-ONLY: Stock history ───────────────────────────────
+                // Workers cannot view stock history
+                .requestMatchers("/api/stock-history/**").hasRole("ADMIN")
 
                 // ── SALES: Workers can GET (today filter done in frontend)
                 //           Workers can POST (record a sale)
                 //           Workers CANNOT DELETE — ADMIN only
                 .requestMatchers(HttpMethod.DELETE, "/api/sales/**").hasRole("ADMIN")
                 .requestMatchers("/api/sales/**").authenticated()  // GET + POST allowed for both roles
-
-                // ── Customers: every operational role, branch-scoped by the
-                //    service layer for scoped roles ─────────────────────────
-                .requestMatchers("/api/customers/**").authenticated()
-
-                // ── Suppliers (global) & Purchases (branch-scoped): every
-                //    operational role; supplier delete is ADMIN-only ────────
-                .requestMatchers(HttpMethod.DELETE, "/api/suppliers/**").hasRole("ADMIN")
-                .requestMatchers("/api/suppliers/**").authenticated()
-                .requestMatchers("/api/purchases/**").authenticated()
 
                 // ── PRODUCTS: Both ADMIN and WORKER have full access
                 //              (read, create, update, delete, stock-adjust)

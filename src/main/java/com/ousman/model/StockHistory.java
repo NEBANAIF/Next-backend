@@ -17,22 +17,13 @@ public class StockHistory {
     @JoinColumn(name = "product_id", nullable = false)
     private Product product;
 
-    // Which branch this movement happened at. Nullable only for legacy rows
-    // recorded before branches existed, or the handful of legacy flat-stock
-    // endpoints (ProductController's manual adjust-stock) that still don't
-    // require a branch. Every new sale, batch receipt, transfer leg, return,
-    // and adjustment made through a branch-aware flow sets this.
+    // Which branch this movement happened at — nullable for legacy rows and
+    // for quick corrections made with no branch context (see ProductService
+    // adjustStock's public-facing correction path). Every batch-tracked
+    // pathway (receiving, sales, transfers, returns) always sets this.
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "branch_id")
     private Branch branch;
-
-    // Which specific batch this movement drew from or created, when known.
-    // Null for movements that aren't tied to one batch (e.g. a sale that
-    // spanned multiple batches only records the first for traceability, or
-    // legacy flat-stock rows that predate batching).
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "batch_id")
-    private ProductBatch batch;
 
     // Positive = added, Negative = removed
     @Column(name = "quantity_change", nullable = false)
@@ -82,9 +73,6 @@ private String user;
 
     public Branch getBranch() { return branch; }
     public void setBranch(Branch branch) { this.branch = branch; }
-
-    public ProductBatch getBatch() { return batch; }
-    public void setBatch(ProductBatch batch) { this.batch = batch; }
 
     public Integer getQuantityChange() { return quantityChange; }
     public void setQuantityChange(Integer quantityChange) { this.quantityChange = quantityChange; }

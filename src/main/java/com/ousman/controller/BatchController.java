@@ -43,7 +43,7 @@ public class BatchController {
     @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<List<ProductBatch>> getAvailable(
             @RequestParam Long productId, @RequestParam Long branchId) {
-        return ResponseEntity.ok(batchService.getAvailable(productId, branchId));
+        return ResponseEntity.ok(batchService.getAvailable(productId, accessControl.resolveBranchFilter(branchId)));
     }
 
     // Every batch (including depleted) for a product+branch — history view.
@@ -51,13 +51,13 @@ public class BatchController {
     @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<List<ProductBatch>> getAllForProductAndBranch(
             @RequestParam Long productId, @RequestParam Long branchId) {
-        return ResponseEntity.ok(batchService.getAllForProductAndBranch(productId, branchId));
+        return ResponseEntity.ok(batchService.getAllForProductAndBranch(productId, accessControl.resolveBranchFilter(branchId)));
     }
 
     @GetMapping("/branch-stock")
     @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<?> getBranchStock(@RequestParam Long productId, @RequestParam Long branchId) {
-        return ResponseEntity.ok(Map.of("stock", batchService.getBranchStock(productId, branchId)));
+        return ResponseEntity.ok(Map.of("stock", batchService.getBranchStock(productId, accessControl.resolveBranchFilter(branchId))));
     }
 
     @GetMapping("/page")
@@ -69,7 +69,7 @@ public class BatchController {
             @RequestParam(required = false) Long branchId,
             @RequestParam(required = false) String search) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "receivedDate"));
-        return ResponseEntity.ok(batchService.getPage(productId, branchId, search, pageable));
+        return ResponseEntity.ok(batchService.getPage(productId, accessControl.resolveBranchFilter(branchId), search, pageable));
     }
 
     @GetMapping("/{id}")
@@ -91,7 +91,7 @@ public class BatchController {
         public Double costPerUnit;
         public String batchNumber;
         public LocalDate receivedDate;
-        public String supplier;
+        public Long supplierId;
         public String notes;
         public String recordedBy;
     }
@@ -104,7 +104,7 @@ public class BatchController {
             ProductBatch batch = batchService.receive(
                 req.productId, req.branchId, req.quantity, req.costPerUnit,
                 req.batchNumber, req.receivedDate,
-                req.supplier, req.notes, req.recordedBy
+                req.supplierId, req.notes, req.recordedBy
             );
             return ResponseEntity.ok(batch);
         } catch (RuntimeException e) {
@@ -117,7 +117,7 @@ public class BatchController {
     public static class UpdateRequest {
         public Double costPerUnit;
         public String batchNumber;
-        public String supplier;
+        public Long supplierId;
         public String notes;
     }
 
@@ -126,7 +126,7 @@ public class BatchController {
     public ResponseEntity<?> update(@PathVariable Long id, @RequestBody UpdateRequest req) {
         try {
             ProductBatch batch = batchService.update(
-                id, req.costPerUnit, req.batchNumber, req.supplier, req.notes);
+                id, req.costPerUnit, req.batchNumber, req.supplierId, req.notes);
             return ResponseEntity.ok(batch);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

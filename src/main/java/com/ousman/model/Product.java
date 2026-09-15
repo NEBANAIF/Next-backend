@@ -26,7 +26,9 @@ public class Product {
     @Column(name = "min_stock")
     private Integer minStock = 30;
 
-    private String category;
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "category_id")
+    private Category category;
 
     @Column(length = 1000)
     private String description;
@@ -83,8 +85,8 @@ public class Product {
     public Integer getMinStock() { return minStock; }
     public void setMinStock(Integer minStock) { this.minStock = minStock; }
 
-    public String getCategory() { return category; }
-    public void setCategory(String category) { this.category = category; }
+    public Category getCategory() { return category; }
+    public void setCategory(Category category) { this.category = category; }
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }

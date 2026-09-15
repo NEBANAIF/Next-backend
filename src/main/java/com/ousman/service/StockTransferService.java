@@ -18,29 +18,20 @@ import java.util.List;
 /**
  * Stock transfers between any two branches — Warehouse↔Warehouse,
  * Warehouse↔Store, or Store↔Store, since every location's stock lives on
- * a branch. Follows Request → Approve → (In Transit) → Received:
+ * a branch. Follows Request → Approve → Complete:
  *
- *   request()      — PENDING. No stock moves yet. Requester needs access
- *                    to either the source or destination branch.
- *   approve()      — the moment stock actually leaves the source branch's
- *                    batches and arrives as new batch(es) at the
- *                    destination, preserving each source batch's original
- *                    cost. Requires access to the SOURCE branch.
- *   reject()       — closes a PENDING request with no stock movement, at
- *                    the source branch's discretion. Same access
- *                    requirement as approve.
- *   cancel()       — closes a PENDING request at the requester's own
- *                    initiative, before anyone has acted on it. Only valid
- *                    pre-approval — nothing to reverse yet.
- *   markInTransit()— optional APPROVED → IN_TRANSIT checkpoint, purely for
- *                    workflow visibility. No further stock movement (that
- *                    already happened at approval).
- *   complete()     — the destination branch confirms receipt (APPROVED or
- *                    IN_TRANSIT → RECEIVED), closing the loop for
- *                    accountability. Requires access to the DESTINATION
- *                    branch. No further stock movement happens here.
- *
- * Status values: PENDING, APPROVED, IN_TRANSIT, RECEIVED, REJECTED, CANCELLED.
+ *   request()  — PENDING. No stock moves yet. Requester needs access to
+ *                either the source or destination branch.
+ *   approve()  — the moment stock actually leaves the source branch's
+ *                batches and arrives as new batch(es) at the destination,
+ *                preserving each source batch's original cost. Requires
+ *                access to the SOURCE branch (releasing the stock).
+ *   reject()   — closes the request with no stock movement. Same access
+ *                requirement as approve.
+ *   complete() — the destination branch confirms receipt, closing the
+ *                loop for accountability. Requires access to the
+ *                DESTINATION branch. No further stock movement happens
+ *                here — that already happened at approval.
  */
 @Service
 @Transactional
@@ -159,49 +150,21 @@ public class StockTransferService {
         StockTransfer saved = transferRepository.saveAndFlush(transfer);
 
         // Moves the stock — source batches decrease, new destination batch(es) appear.
-        BatchService.TransferResult consumption = batchService.consumeForTransfer(saved);
-        var firstAllocation = consumption.allocations.isEmpty() ? null : consumption.allocations.get(0);
+        batchService.consumeForTransfer(saved);
 
         // Audit trail on the product's overall history — the business-wide
         // total is unchanged (this only moves stock between branches), so
-        // previousStock and newStock are both the current aggregate. Each
-        // leg is tagged with its own branch and the batch(es) involved on
-        // that side, so Stock History can show exactly where units left
-        // from and where they landed.
+        // previousStock and newStock are both the current aggregate.
         Product product = productService.getById(saved.getProduct().getId());
         int currentStock = product.getStock();
         productService.recordHistory(product, -saved.getQuantity(), currentStock, currentStock,
                 "TRANSFER_OUT", "Transfer to " + saved.getToBranch().getName() + " (transfer #" + saved.getId() + ")",
-                saved.getApprovedBy(), "TRANSFER-" + saved.getId(),
-                saved.getFromBranch(), firstAllocation != null ? firstAllocation.getSourceBatch() : null);
+                saved.getApprovedBy(), "TRANSFER-" + saved.getId(), saved.getFromBranch());
         productService.recordHistory(product, saved.getQuantity(), currentStock, currentStock,
                 "TRANSFER_IN", "Transfer from " + saved.getFromBranch().getName() + " (transfer #" + saved.getId() + ")",
-                saved.getApprovedBy(), "TRANSFER-" + saved.getId(),
-                saved.getToBranch(), firstAllocation != null ? firstAllocation.getDestinationBatch() : null);
+                saved.getApprovedBy(), "TRANSFER-" + saved.getId(), saved.getToBranch());
 
         return saved;
-    }
-
-    // ── Write: mark in transit ────────────────────────────────────────────
-    // An optional checkpoint between APPROVED and RECEIVED, purely for
-    // workflow visibility — no additional stock movement happens here since
-    // the batch reallocation already occurred at approval. Requires access
-    // to the source branch, same as approve/reject (it's the source side
-    // confirming the goods have physically left).
-
-    @Caching(evict = {
-        @CacheEvict(value = "products",  allEntries = true),
-        @CacheEvict(value = "analytics", allEntries = true)
-    })
-    public StockTransfer markInTransit(Long id, String actor) {
-        StockTransfer transfer = getById(id);
-        if (!"APPROVED".equals(transfer.getStatus())) {
-            throw new RuntimeException("Only approved transfers can be marked in transit.");
-        }
-        accessControl.requireBranchAccess(transfer.getFromBranch().getId());
-
-        transfer.setStatus("IN_TRANSIT");
-        return transferRepository.saveAndFlush(transfer);
     }
 
     // ── Write: reject ────────────────────────────────────────────────────
@@ -224,39 +187,7 @@ public class StockTransferService {
         return transferRepository.saveAndFlush(transfer);
     }
 
-    // ── Write: cancel ────────────────────────────────────────────────────
-    // Distinct from reject: cancel is the requester (or either side) backing
-    // out of a transfer that hasn't been acted on yet, rather than the
-    // source branch declining it. Only available from PENDING — no stock
-    // has moved yet at that point, so there's nothing to reverse. Cancelling
-    // an already-approved transfer would require unwinding real batch
-    // movement and isn't supported yet.
-
-    @Caching(evict = {
-        @CacheEvict(value = "products",  allEntries = true),
-        @CacheEvict(value = "analytics", allEntries = true)
-    })
-    public StockTransfer cancel(Long id, String cancelledBy, String reason) {
-        StockTransfer transfer = getById(id);
-        if (!"PENDING".equals(transfer.getStatus())) {
-            throw new RuntimeException("Only pending transfers can be cancelled. " +
-                    "An approved transfer has already moved stock — reject it before approval instead, " +
-                    "or request a reverse transfer.");
-        }
-        var visible = accessControl.visibleBranchIdsOrNullForAll();
-        if (visible != null && !visible.contains(transfer.getFromBranch().getId())
-                && !visible.contains(transfer.getToBranch().getId())) {
-            throw new RuntimeException("You don't have access to either branch in this transfer.");
-        }
-
-        transfer.setRejectedBy(cancelledBy != null ? cancelledBy : "Admin");
-        transfer.setRejectedAt(LocalDateTime.now());
-        transfer.setRejectionReason(reason != null ? reason : "Cancelled by requester");
-        transfer.setStatus("CANCELLED");
-        return transferRepository.saveAndFlush(transfer);
-    }
-
-    // ── Write: complete / receive ─────────────────────────────────────────
+    // ── Write: complete ───────────────────────────────────────────────────
 
     @Caching(evict = {
         @CacheEvict(value = "products",  allEntries = true),
@@ -264,14 +195,14 @@ public class StockTransferService {
     })
     public StockTransfer complete(Long id, String completedBy) {
         StockTransfer transfer = getById(id);
-        if (!"APPROVED".equals(transfer.getStatus()) && !"IN_TRANSIT".equals(transfer.getStatus())) {
-            throw new RuntimeException("Only approved or in-transit transfers can be marked received.");
+        if (!"APPROVED".equals(transfer.getStatus())) {
+            throw new RuntimeException("Only approved transfers can be marked complete.");
         }
         accessControl.requireBranchAccess(transfer.getToBranch().getId());
 
         transfer.setCompletedBy(completedBy != null ? completedBy : "Admin");
         transfer.setCompletedAt(LocalDateTime.now());
-        transfer.setStatus("RECEIVED");
+        transfer.setStatus("COMPLETED");
         return transferRepository.saveAndFlush(transfer);
     }
 }

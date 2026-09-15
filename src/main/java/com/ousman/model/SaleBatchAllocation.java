@@ -41,12 +41,19 @@ public class SaleBatchAllocation {
     @Column(name = "cost_per_unit", nullable = false)
     private Double costPerUnit;
 
+    // How much of this allocation's quantity has been credited back via a
+    // Return so far. Capped at `quantity` — never restore more than was
+    // originally consumed from this specific batch.
+    @Column(name = "restored_quantity", nullable = false, columnDefinition = "INTEGER DEFAULT 0")
+    private Integer restoredQuantity = 0;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+        if (restoredQuantity == null) restoredQuantity = 0;
     }
 
     // ── Getters & Setters ────────────────────────────────
@@ -64,6 +71,9 @@ public class SaleBatchAllocation {
 
     public Double getCostPerUnit() { return costPerUnit; }
     public void setCostPerUnit(Double costPerUnit) { this.costPerUnit = costPerUnit; }
+
+    public Integer getRestoredQuantity() { return restoredQuantity; }
+    public void setRestoredQuantity(Integer restoredQuantity) { this.restoredQuantity = restoredQuantity; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

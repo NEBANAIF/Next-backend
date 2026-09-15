@@ -46,7 +46,7 @@ public class PaymentController {
 
     // GET /api/payments/page — paginated, searchable, filterable, sortable
     @GetMapping("/page")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<Page<Payment>> getPage(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -70,7 +70,7 @@ public class PaymentController {
 
     // GET /api/payments/{code} — lookup by human-facing payment code, e.g. PAY-000123
     @GetMapping("/{code}")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<?> getByCode(@PathVariable String code) {
         try {
             return ResponseEntity.ok(paymentService.getByCode(code));

@@ -22,9 +22,17 @@ public class User {
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password; // BCrypt hashed — accepted on create/update, never returned
 
-    // ADMIN | WORKER
+    // ADMIN | WORKER | WAREHOUSE_MANAGER | STORE_MANAGER | STAFF
     @Column(nullable = false)
     private String role = "WORKER";
+
+    // Every non-ADMIN user belongs to exactly one branch, assigned at
+    // account creation and enforced there (see UserService.create). ADMIN
+    // has no branch — they see everything regardless. This replaced the
+    // earlier multi-branch UserBranchAccess assignment model.
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "branch_id")
+    private Branch branch;
 
     // ACTIVE | INACTIVE
     @Column(nullable = false)
@@ -35,16 +43,6 @@ public class User {
 
     @Column(name = "last_login")
     private LocalDateTime lastLogin;
-
-    // ── Branch-assignment request field (NOT persisted here) ─────────────
-    // Required at creation time for the three location-scoped roles
-    // (WAREHOUSE_MANAGER, STORE_MANAGER, STAFF) — see UserService.create.
-    // The actual assignment lives in UserBranchAccess rows, not on this
-    // entity, so a user can later be granted access to more than one
-    // branch without a schema change. ADMIN and the legacy WORKER role are
-    // exempt — they keep unscoped, branch-independent visibility.
-    @jakarta.persistence.Transient
-    private java.util.List<Long> branchIds;
 
     @PrePersist
     protected void onCreate() {
@@ -67,6 +65,9 @@ public class User {
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
 
+    public Branch getBranch() { return branch; }
+    public void setBranch(Branch branch) { this.branch = branch; }
+
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
 
@@ -75,7 +76,4 @@ public class User {
 
     public LocalDateTime getLastLogin() { return lastLogin; }
     public void setLastLogin(LocalDateTime lastLogin) { this.lastLogin = lastLogin; }
-
-    public java.util.List<Long> getBranchIds() { return branchIds; }
-    public void setBranchIds(java.util.List<Long> branchIds) { this.branchIds = branchIds; }
 }

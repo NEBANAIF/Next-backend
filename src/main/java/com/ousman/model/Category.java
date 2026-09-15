@@ -4,38 +4,26 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * A vendor the company buys stock from. Suppliers are company-wide, not
- * branch-scoped — the same supplier can fulfill purchase orders for any
- * branch. What IS branch-scoped is the PurchaseOrder itself (and the
- * ProductBatch it produces on receipt).
+ * A product category. Shared across the whole company (same catalog for
+ * every branch) — it's each branch's stock, batches, and sales against a
+ * product that are independent, not the product/category definitions
+ * themselves.
  */
 @Entity
-@Table(name = "suppliers", indexes = {
-    @Index(name = "idx_suppliers_name", columnList = "name")
+@Table(name = "categories", indexes = {
+    @Index(name = "idx_categories_name", columnList = "name")
 })
-public class Supplier {
+public class Category {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true, length = 150)
+    @Column(nullable = false, unique = true, length = 100)
     private String name;
 
-    @Column(length = 150)
-    private String contactName;
-
-    @Column(length = 50)
-    private String phone;
-
-    @Column(length = 150)
-    private String email;
-
-    @Column(length = 250)
-    private String address;
-
     @Column(length = 500)
-    private String notes;
+    private String description;
 
     @Column(nullable = false, columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
@@ -65,20 +53,8 @@ public class Supplier {
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
-    public String getContactName() { return contactName; }
-    public void setContactName(String contactName) { this.contactName = contactName; }
-
-    public String getPhone() { return phone; }
-    public void setPhone(String phone) { this.phone = phone; }
-
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-
-    public String getAddress() { return address; }
-    public void setAddress(String address) { this.address = address; }
-
-    public String getNotes() { return notes; }
-    public void setNotes(String notes) { this.notes = notes; }
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
 
     public Boolean getActive() { return active; }
     public void setActive(Boolean active) { this.active = active; }

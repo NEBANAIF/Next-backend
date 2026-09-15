@@ -24,14 +24,15 @@ public class AuthController {
         try {
             String token = userService.login(req.getEmail(), req.getPassword());
             User user    = userService.getByEmail(req.getEmail());
-            return ResponseEntity.ok(Map.of(
-                "token",  token,
-                "id",     user.getId(),
-                "name",   user.getName(),
-                "email",  user.getEmail(),
-                "role",   user.getRole(),
-                "status", user.getStatus()
-            ));
+            Map<String, Object> body = new java.util.HashMap<>();
+            body.put("token",  token);
+            body.put("id",     user.getId());
+            body.put("name",   user.getName());
+            body.put("email",  user.getEmail());
+            body.put("role",   user.getRole());
+            body.put("status", user.getStatus());
+            body.put("branch", user.getBranch()); // null for ADMIN — the frontend already handles that
+            return ResponseEntity.ok(body);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

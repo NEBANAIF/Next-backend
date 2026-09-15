@@ -1,11 +1,9 @@
 package com.ousman.service;
 
-import com.ousman.model.User;
-import com.ousman.model.UserBranchAccess;
 import com.ousman.model.Branch;
-import com.ousman.repository.UserRepository;
-import com.ousman.repository.UserBranchAccessRepository;
+import com.ousman.model.User;
 import com.ousman.repository.BranchRepository;
+import com.ousman.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -14,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class UserService {
@@ -21,16 +20,15 @@ public class UserService {
     @Autowired private UserRepository  userRepo;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private JwtService      jwtService;
-    @Autowired private UserBranchAccessRepository branchAccessRepo;
     @Autowired private BranchRepository branchRepo;
 
     private static final int MIN_PASSWORD_LENGTH = 8;
 
-    // ── Validate Helpers ──────────────────────────────────────────
-    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of(
+    private static final Set<String> VALID_ROLES = Set.of(
         "ADMIN", "WORKER", "WAREHOUSE_MANAGER", "STORE_MANAGER", "STAFF"
     );
 
+    // ── Validate Helpers ──────────────────────────────────────────
     private void validateRole(String role) {
         if (role == null || !VALID_ROLES.contains(role)) {
             throw new RuntimeException("Invalid role. Must be one of: " + String.join(", ", VALID_ROLES) + ".");
@@ -59,6 +57,11 @@ public class UserService {
         return password != null && (password.startsWith("$2a$") || password.startsWith("$2b$") || password.startsWith("$2y$"));
     }
 
+    /** Every role except ADMIN is a branch user and must have exactly one branch. */
+    private boolean requiresBranch(String role) {
+        return !"ADMIN".equals(role);
+    }
+
     // ── Login ──────────────────────────────────────────────────────
     @Transactional
     public String login(String email, String rawPassword) {
@@ -82,7 +85,6 @@ public class UserService {
     // ── Create User ────────────────────────────────────────────────
     @Transactional
     public User create(User req) {
-        // Validate inputs
         if (req.getEmail() == null || req.getEmail().trim().isEmpty()) {
             throw new RuntimeException("Email is required.");
         }
@@ -98,46 +100,29 @@ public class UserService {
         req.setEmail(req.getEmail().toLowerCase());
         req.setName(req.getName().trim());
         req.setPassword(passwordEncoder.encode(req.getPassword()));
-        
+
         if (req.getRole() == null) req.setRole("WORKER");
         else validateRole(req.getRole());
-        
+
         if (req.getStatus() == null) req.setStatus("ACTIVE");
         else validateStatus(req.getStatus());
 
-        // Every non-ADMIN account must be assigned to at least one branch at
-        // creation time — an account with no branch has nowhere to work.
-        // Only the three location-scoped roles are actually restricted by
-        // branch (see AccessControlService.SCOPED_ROLES); ADMIN and the
-        // legacy WORKER role keep their original unscoped visibility, so
-        // this requirement must not apply to them.
-        java.util.Set<String> scopedRoles = java.util.Set.of("WAREHOUSE_MANAGER", "STORE_MANAGER", "STAFF");
-        boolean requiresBranch = scopedRoles.contains(req.getRole());
-        List<Long> branchIds = req.getBranchIds();
-        if (requiresBranch && (branchIds == null || branchIds.isEmpty())) {
-            throw new RuntimeException("At least one branch must be assigned when creating this account.");
-        }
-
-        // Resolve every branch id up front so we fail before persisting the
-        // user if any of them is invalid — never create a "half-set-up" account.
-        List<Branch> branches = new java.util.ArrayList<>();
-        if (branchIds != null) {
-            for (Long branchId : branchIds) {
-                branches.add(branchRepo.findById(branchId)
-                    .orElseThrow(() -> new RuntimeException("Branch not found: " + branchId)));
+        // Branch is mandatory for every role except ADMIN, and set exactly
+        // once here at creation — the whole point of "branch users only see
+        // their branch" is that this assignment isn't something they (or a
+        // careless later edit) can silently drop.
+        if (requiresBranch(req.getRole())) {
+            if (req.getBranch() == null || req.getBranch().getId() == null) {
+                throw new RuntimeException("A branch is required for every role except ADMIN.");
             }
+            Branch branch = branchRepo.findById(req.getBranch().getId())
+                .orElseThrow(() -> new RuntimeException("Branch not found: " + req.getBranch().getId()));
+            req.setBranch(branch);
+        } else {
+            req.setBranch(null); // ADMIN is never branch-scoped
         }
 
-        User saved = userRepo.saveAndFlush(req);
-
-        for (Branch branch : branches) {
-            UserBranchAccess access = new UserBranchAccess();
-            access.setUser(saved);
-            access.setBranch(branch);
-            branchAccessRepo.saveAndFlush(access);
-        }
-
-        return saved;
+        return userRepo.saveAndFlush(req);
     }
 
     // ── Get All Users ──────────────────────────────────────────────
@@ -158,13 +143,11 @@ public class UserService {
     public User update(Long id, User req) {
         User existing = getById(id);
 
-        // Validate name
         if (req.getName() != null && !req.getName().trim().isEmpty()) {
             validateName(req.getName());
             existing.setName(req.getName().trim());
         }
 
-        // Validate and update email (check uniqueness if different)
         if (req.getEmail() != null && !req.getEmail().trim().isEmpty()) {
             String newEmail = req.getEmail().toLowerCase();
             if (!existing.getEmail().equals(newEmail) && userRepo.existsByEmail(newEmail)) {
@@ -173,19 +156,35 @@ public class UserService {
             existing.setEmail(newEmail);
         }
 
-        // Validate and update role
+        // Role and branch are validated together: a role change that drops
+        // to/from ADMIN changes whether a branch is required at all.
+        String effectiveRole = existing.getRole();
         if (req.getRole() != null) {
             validateRole(req.getRole());
-            existing.setRole(req.getRole());
+            effectiveRole = req.getRole();
+            existing.setRole(effectiveRole);
         }
 
-        // Validate and update status
+        if (requiresBranch(effectiveRole)) {
+            Long newBranchId = req.getBranch() != null ? req.getBranch().getId() : null;
+            if (newBranchId == null && existing.getBranch() != null) {
+                // Role/branch unchanged from a prior valid state — keep it.
+            } else if (newBranchId == null) {
+                throw new RuntimeException("A branch is required for every role except ADMIN.");
+            } else {
+                Branch branch = branchRepo.findById(newBranchId)
+                    .orElseThrow(() -> new RuntimeException("Branch not found: " + newBranchId));
+                existing.setBranch(branch);
+            }
+        } else {
+            existing.setBranch(null); // ADMIN is never branch-scoped
+        }
+
         if (req.getStatus() != null) {
             validateStatus(req.getStatus());
             existing.setStatus(req.getStatus());
         }
 
-        // Update password if provided and not blank
         if (req.getPassword() != null && !req.getPassword().isBlank()) {
             validatePassword(req.getPassword());
             existing.setPassword(passwordEncoder.encode(req.getPassword()));
@@ -218,7 +217,6 @@ public class UserService {
 
     // ── Save User (Internal Use Only) ──────────────────────────────
     public User save(User user) {
-        // Only encode if password is plaintext (not already hashed)
         if (user.getPassword() != null && !isPasswordHashed(user.getPassword())) {
             validatePassword(user.getPassword());
             user.setPassword(passwordEncoder.encode(user.getPassword()));
@@ -229,33 +227,5 @@ public class UserService {
     // ── Find By Email ──────────────────────────────────────────────
     public Optional<User> findByEmail(String email) {
         return userRepo.findByEmail(email);
-    }
-
-    // ── Branch access (for the location-scoped roles) ───────────────
-    @Transactional(readOnly = true)
-    public List<UserBranchAccess> getBranchAccess(Long userId) {
-        getById(userId); // 404 if the user doesn't exist
-        return branchAccessRepo.findByUserId(userId);
-    }
-
-    @Transactional
-    public UserBranchAccess assignBranch(Long userId, Long branchId) {
-        User user = getById(userId);
-        Branch branch = branchRepo.findById(branchId)
-            .orElseThrow(() -> new RuntimeException("Branch not found: " + branchId));
-        return branchAccessRepo.findByUserIdAndBranchId(userId, branchId).orElseGet(() -> {
-            UserBranchAccess access = new UserBranchAccess();
-            access.setUser(user);
-            access.setBranch(branch);
-            return branchAccessRepo.saveAndFlush(access);
-        });
-    }
-
-    @Transactional
-    public void unassignBranch(Long userId, Long branchId) {
-        if (!branchAccessRepo.existsByUserIdAndBranchId(userId, branchId)) {
-            throw new RuntimeException("This user isn't assigned to that branch.");
-        }
-        branchAccessRepo.deleteByUserIdAndBranchId(userId, branchId);
     }
 }

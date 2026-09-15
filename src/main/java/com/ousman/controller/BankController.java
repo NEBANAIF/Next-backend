@@ -32,21 +32,21 @@ public class BankController {
 
     // GET /api/banks?search= — full list, both roles (management table)
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<List<Bank>> getAll(@RequestParam(required = false) String search) {
         return ResponseEntity.ok(bankService.getAll(search));
     }
 
     // GET /api/banks/active — active-only, lightweight list for the Sales-form picker
     @GetMapping("/active")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<List<Bank>> getActive() {
         return ResponseEntity.ok(bankService.getActive());
     }
 
     // GET /api/banks/page — paginated + searchable, powers the Banks management table
     @GetMapping("/page")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<Page<Bank>> getPage(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -56,7 +56,7 @@ public class BankController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'WORKER', 'WAREHOUSE_MANAGER', 'STORE_MANAGER', 'STAFF')")
     public ResponseEntity<?> getById(@PathVariable Long id) {
         try {
             return ResponseEntity.ok(bankService.getById(id));

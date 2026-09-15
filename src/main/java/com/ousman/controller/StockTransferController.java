@@ -73,7 +73,7 @@ public class StockTransferController {
 
     // ── Request ──────────────────────────────────────────────────────────
 
-    public static class TransferRequestBody {
+    public static class TransferRequestPayload {
         public Long productId;
         public Long fromBranchId;
         public Long toBranchId;
@@ -85,7 +85,7 @@ public class StockTransferController {
 
     @PostMapping
     @PreAuthorize(OPERATIONAL_ROLES)
-    public ResponseEntity<?> request(@RequestBody TransferRequestBody req) {
+    public ResponseEntity<?> request(@RequestBody TransferRequestPayload req) {
         try {
             StockTransfer transfer = transferService.request(
                 req.productId, req.fromBranchId, req.toBranchId, req.quantity,
@@ -121,29 +121,6 @@ public class StockTransferController {
             String actor  = body != null ? body.actor : null;
             String reason = body != null ? body.reason : null;
             return ResponseEntity.ok(transferService.reject(id, actor, reason));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    @PostMapping("/{id}/cancel")
-    @PreAuthorize(OPERATIONAL_ROLES)
-    public ResponseEntity<?> cancel(@PathVariable Long id, @RequestBody(required = false) ActorBody body) {
-        try {
-            String actor  = body != null ? body.actor : null;
-            String reason = body != null ? body.reason : null;
-            return ResponseEntity.ok(transferService.cancel(id, actor, reason));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    @PostMapping("/{id}/in-transit")
-    @PreAuthorize(OPERATIONAL_ROLES)
-    public ResponseEntity<?> markInTransit(@PathVariable Long id, @RequestBody(required = false) ActorBody body) {
-        try {
-            String actor = body != null ? body.actor : null;
-            return ResponseEntity.ok(transferService.markInTransit(id, actor));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

@@ -5,8 +5,10 @@ import com.ousman.model.Location;
 import com.ousman.repository.BranchRepository;
 import com.ousman.repository.LocationRepository;
 import com.ousman.repository.ProductBatchRepository;
+import com.ousman.repository.PurchaseOrderRepository;
+import com.ousman.repository.CustomerRepository;
 import com.ousman.repository.StockTransferRepository;
-import com.ousman.repository.UserBranchAccessRepository;
+import com.ousman.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -34,7 +36,13 @@ public class BranchService {
     private StockTransferRepository transferRepository;
 
     @Autowired
-    private UserBranchAccessRepository accessRepository;
+    private PurchaseOrderRepository purchaseOrderRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @Autowired
     private AccessControlService accessControl;
@@ -134,8 +142,14 @@ public class BranchService {
         if (transferRepository.existsByFromBranchIdOrToBranchId(id, id)) {
             throw new RuntimeException("This branch has stock transfers on record and cannot be deleted. Deactivate it instead.");
         }
-        if (accessRepository.existsByBranchId(id)) {
-            throw new RuntimeException("This branch is assigned to one or more users. Unassign it first, or deactivate the branch instead.");
+        if (purchaseOrderRepository.existsByBranchId(id)) {
+            throw new RuntimeException("This branch has purchase orders on record and cannot be deleted. Deactivate it instead.");
+        }
+        if (customerRepository.existsByBranchId(id)) {
+            throw new RuntimeException("This branch has customers on record and cannot be deleted. Deactivate it instead.");
+        }
+        if (userRepository.existsByBranchId(id)) {
+            throw new RuntimeException("This branch is assigned to one or more users. Reassign them to a different branch first, or deactivate this branch instead.");
         }
         branchRepository.delete(branch);
     }

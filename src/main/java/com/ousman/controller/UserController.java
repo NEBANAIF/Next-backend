@@ -62,39 +62,8 @@ public class UserController {
         }
     }
 
-    // ── Branch access — which branches this user (a WAREHOUSE_MANAGER,
-    //    STORE_MANAGER, or STAFF) can see and act on. Meaningless for
-    //    ADMIN/WORKER, who stay unscoped regardless. Entire controller is
-    //    already ADMIN-only via SecurityConfig ("/api/users/**").
-
-    // GET /api/users/{id}/branches
-    @GetMapping("/{id}/branches")
-    public ResponseEntity<?> getBranchAccess(@PathVariable Long id) {
-        try {
-            return ResponseEntity.ok(userService.getBranchAccess(id));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    // POST /api/users/{id}/branches/{branchId}
-    @PostMapping("/{id}/branches/{branchId}")
-    public ResponseEntity<?> assignBranch(@PathVariable Long id, @PathVariable Long branchId) {
-        try {
-            return ResponseEntity.ok(userService.assignBranch(id, branchId));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    // DELETE /api/users/{id}/branches/{branchId}
-    @DeleteMapping("/{id}/branches/{branchId}")
-    public ResponseEntity<?> unassignBranch(@PathVariable Long id, @PathVariable Long branchId) {
-        try {
-            userService.unassignBranch(id, branchId);
-            return ResponseEntity.ok(Map.of("message", "Branch unassigned"));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
+    // ── Branch assignment now happens directly on create/update ────────
+    // (User.branch, set once at creation) — see UserService. The old
+    // multi-branch assignment endpoints (UserBranchAccess) were removed;
+    // a user's single branch is just a field on the User payload now.
 }

@@ -5,6 +5,9 @@ import com.ousman.model.ProductBatch;
 import com.ousman.model.Sale;
 import com.ousman.model.SaleBatchAllocation;
 import com.ousman.model.Branch;
+import com.ousman.model.Supplier;
+import com.ousman.model.PurchaseOrder;
+import com.ousman.model.PurchaseOrderLine;
 import com.ousman.model.StockTransfer;
 import com.ousman.model.StockTransferAllocation;
 import com.ousman.repository.ProductBatchRepository;
@@ -52,6 +55,9 @@ public class BatchService {
     @Autowired
     private BranchService branchService;
 
+    @Autowired
+    private SupplierService supplierService;
+
     // ── Read ─────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -88,11 +94,32 @@ public class BatchService {
      * Receives a new batch of stock for a product into a branch, at its
      * own cost. Also bumps Product.stock (the business-wide total) via the
      * existing adjustStock path, so every screen that already reads
-     * Product.stock keeps working unchanged.
+     * Product.stock keeps working unchanged. A batch has no selling price
+     * and no expiry date — see ProductBatch. `supplierId`/`purchaseOrder`/
+     * `purchaseOrderLine` are optional: a manual/ad-hoc batch entry can
+     * leave them null, while receiving against a PO always sets all three
+     * (see receiveForPurchaseOrderLine).
      */
     public ProductBatch receive(Long productId, Long branchId, Integer quantity, Double costPerUnit,
                                  String batchNumber, LocalDate receivedDate,
-                                 String supplier, String notes, String recordedBy) {
+                                 Long supplierId, String notes, String recordedBy) {
+        return receiveInternal(productId, branchId, quantity, costPerUnit, batchNumber, receivedDate,
+                supplierId, null, null, notes, recordedBy);
+    }
+
+    /** Same as receive(), but tags the batch to the PO/line it was received against. Called by PurchaseOrderService. */
+    ProductBatch receiveForPurchaseOrderLine(Long productId, Long branchId, Integer quantity, Double costPerUnit,
+                                              String batchNumber, LocalDate receivedDate, Long supplierId,
+                                              PurchaseOrder purchaseOrder, PurchaseOrderLine purchaseOrderLine,
+                                              String notes, String recordedBy) {
+        return receiveInternal(productId, branchId, quantity, costPerUnit, batchNumber, receivedDate,
+                supplierId, purchaseOrder, purchaseOrderLine, notes, recordedBy);
+    }
+
+    private ProductBatch receiveInternal(Long productId, Long branchId, Integer quantity, Double costPerUnit,
+                                          String batchNumber, LocalDate receivedDate, Long supplierId,
+                                          PurchaseOrder purchaseOrder, PurchaseOrderLine purchaseOrderLine,
+                                          String notes, String recordedBy) {
         if (quantity == null || quantity <= 0) {
             throw new RuntimeException("Quantity received must be greater than zero.");
         }
@@ -101,6 +128,7 @@ public class BatchService {
         }
         Product product = productService.getById(productId);
         Branch branch = branchService.getById(branchId);
+        Supplier supplier = supplierId != null ? supplierService.getById(supplierId) : null;
 
         ProductBatch batch = new ProductBatch();
         batch.setProduct(product);
@@ -111,6 +139,8 @@ public class BatchService {
         batch.setQuantityRemaining(quantity);
         batch.setReceivedDate(receivedDate != null ? receivedDate : LocalDate.now());
         batch.setSupplier(supplier);
+        batch.setPurchaseOrder(purchaseOrder);
+        batch.setPurchaseOrderLine(purchaseOrderLine);
         batch.setNotes(notes);
         batch.setRecordedBy(recordedBy != null ? recordedBy : "Admin");
 
@@ -124,8 +154,7 @@ public class BatchService {
 
         String reason = "Batch received" + (saved.getBatchNumber() != null ? " (" + saved.getBatchNumber() + ")" : "")
                 + " at " + branch.getName();
-        productService.adjustStock(productId, quantity, reason, recordedBy != null ? recordedBy : "Admin",
-                branch, saved);
+        productService.adjustStock(productId, quantity, reason, recordedBy != null ? recordedBy : "Admin", branch);
 
         return saved;
     }
@@ -134,11 +163,11 @@ public class BatchService {
 
     /** Corrects cost/notes/supplier on a batch. Quantities never change here. */
     public ProductBatch update(Long id, Double costPerUnit, String batchNumber,
-                                String supplier, String notes) {
+                                Long supplierId, String notes) {
         ProductBatch batch = getById(id);
         if (costPerUnit != null && costPerUnit >= 0) batch.setCostPerUnit(costPerUnit);
         if (batchNumber != null && !batchNumber.isBlank()) batch.setBatchNumber(batchNumber.trim());
-        batch.setSupplier(supplier);
+        batch.setSupplier(supplierId != null ? supplierService.getById(supplierId) : null);
         batch.setNotes(notes);
         return batchRepository.saveAndFlush(batch);
     }
@@ -155,7 +184,7 @@ public class BatchService {
         // Reverse the stock bump this batch caused when it was received.
         productService.adjustStock(batch.getProduct().getId(), -batch.getQuantityReceived(),
                 "Batch deleted (" + (batch.getBatchNumber() != null ? batch.getBatchNumber() : "id " + id) + ")",
-                "Admin", batch.getBranch(), batch);
+                "Admin", batch.getBranch());
         batchRepository.delete(batch);
     }
 
@@ -242,6 +271,39 @@ public class BatchService {
         allocationRepository.deleteAll(allocations);
     }
 
+    /**
+     * Credits `quantity` units back to the exact batch(es) a sale drew
+     * from — used by a Return with restock=true. Unlike sale deletion,
+     * this is partial: only up to `quantity` units are restored, and each
+     * allocation tracks how much of it has already been given back via
+     * restoredQuantity, so the same units can never be double-restored
+     * across more than one return against the same sale.
+     */
+    public void restoreForReturn(Long saleId, int quantity) {
+        List<SaleBatchAllocation> allocations = allocationRepository.findBySaleId(saleId);
+        int remaining = quantity;
+        for (SaleBatchAllocation a : allocations) {
+            if (remaining <= 0) break;
+            int already = a.getRestoredQuantity() != null ? a.getRestoredQuantity() : 0;
+            int restorable = a.getQuantity() - already;
+            if (restorable <= 0) continue;
+            int take = Math.min(remaining, restorable);
+
+            ProductBatch batch = a.getBatch();
+            batch.setQuantityRemaining(batch.getQuantityRemaining() + take);
+            batchRepository.save(batch);
+
+            a.setRestoredQuantity(already + take);
+            allocationRepository.save(a);
+
+            remaining -= take;
+        }
+        if (remaining > 0) {
+            throw new RuntimeException("Can't restore " + quantity + " unit(s) — only " + (quantity - remaining)
+                    + " unit(s) of this sale's batch allocations are still restorable.");
+        }
+    }
+
     // ── Write: consume batches for an approved transfer ──────────────────
 
     public static class TransferResult {
@@ -306,6 +368,8 @@ public class BatchService {
         dest.setQuantityRemaining(qty);
         dest.setReceivedDate(LocalDate.now());
         dest.setSupplier(source.getSupplier());
+        dest.setPurchaseOrder(source.getPurchaseOrder());
+        dest.setPurchaseOrderLine(source.getPurchaseOrderLine());
         dest.setNotes("Transferred from " + transfer.getFromBranch().getName() + " (source batch "
                 + (source.getBatchNumber() != null ? source.getBatchNumber() : ("#" + source.getId())) + ")");
         dest.setRecordedBy(transfer.getApprovedBy() != null ? transfer.getApprovedBy() : "Admin");
